@@ -619,9 +619,9 @@ def preencher_campos_etiqueta(
         grupo[8]:
             valores["entrada"],
 
-        # Campo 10 - NÃO UTILIZADO
+        # Campo 10 - CONTROLE ENTRADA
         grupo[9]:
-            "",
+            valores["entrada"],
 
         # Campo 11 - Parcela 21x
         grupo[10]:
