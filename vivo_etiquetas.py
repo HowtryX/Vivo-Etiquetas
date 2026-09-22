@@ -18,7 +18,8 @@ try:
     from openpyxl import load_workbook
 except ImportError:
     load_workbook = None
-    
+
+
 def abrir_arquivo(caminho):
     caminho = str(caminho)
 
@@ -34,6 +35,7 @@ def abrir_arquivo(caminho):
         subprocess.Popen(
             ["xdg-open", caminho]
         )
+
 
 # ============================================================
 # CONFIGURAÇÕES GERAIS
@@ -55,7 +57,6 @@ ABA_EXCEL = "SMARTPHONES"
 
 COL_NOME = "E"
 COL_PRE_PAGO = "F"
-COL_BTL = "AB"
 COL_ENTRADA = "AX"
 
 # PDF
@@ -346,7 +347,6 @@ class Aparelho:
         self,
         modelo,
         pre_pago,
-        controle_btl,
         controle_entrada
     ):
 
@@ -354,10 +354,6 @@ class Aparelho:
 
         self.pre_pago = moeda(
             pre_pago
-        )
-
-        self.controle_btl = moeda(
-            controle_entrada
         )
 
         self.controle_entrada = moeda(
@@ -415,7 +411,7 @@ def calcular_etiqueta(
         "valor_seguro":
             valor_seguro,
 
-        "controle_btl":
+        "controle_entrada":
             aparelho.controle_entrada,
 
         "parcela_12x":
@@ -516,10 +512,6 @@ class ExcelRepository:
                 f"{COL_PRE_PAGO}{numero_linha}"
             ].value
 
-            controle_btl = planilha[
-                f"{COL_BTL}{numero_linha}"
-            ].value
-
             controle_entrada = planilha[
                 f"{COL_ENTRADA}{numero_linha}"
             ].value
@@ -531,9 +523,6 @@ class ExcelRepository:
 
                 "Pré-pago":
                     pre_pago,
-
-                "Controle BTL":
-                    controle_entrada,
 
                 "Controle Entrada":
                     controle_entrada,
@@ -625,11 +614,11 @@ def preencher_campos_etiqueta(
 
         # Campo 9
         grupo[8]:
-            valores["btl"],
+            valores["entrada"],
 
         # Campo 10
         grupo[9]:
-            valores["btl"],
+            valores["entrada"],
 
         # Campo 11
         grupo[10]:
@@ -686,16 +675,6 @@ def gerar_pagina_preenchida(
 
     # ========================================================
     # CLONA O DOCUMENTO ORIGINAL
-    # ========================================================
-    #
-    # Isso preserva o AcroForm corretamente.
-    #
-    # Não usamos mais:
-    #
-    # writer.add_page(...)
-    #
-    # junto com cópia manual do /AcroForm.
-    #
     # ========================================================
 
     writer = PdfWriter()
@@ -762,7 +741,7 @@ def gerar_pagina_preenchida(
                     ]
                 ),
 
-            "btl":
+            "entrada":
                 texto_formatado(
                     etiqueta[
                         "controle_entrada"
@@ -1429,7 +1408,6 @@ class Aplicacao:
 
         self.var_nome = tk.StringVar()
         self.var_pre_pago = tk.StringVar()
-        self.var_btl = tk.StringVar()
         self.var_entrada = tk.StringVar()
 
         campos = [
@@ -1442,11 +1420,6 @@ class Aplicacao:
             (
                 "Pré-pago:",
                 self.var_pre_pago
-            ),
-
-            (
-                "Controle BTL:",
-                self.var_btl
             ),
 
             (
@@ -1488,7 +1461,7 @@ class Aplicacao:
             text="Calcular aparelho",
             command=self.calcular_atual
         ).grid(
-            row=4,
+            row=3,
             column=0,
             columnspan=2,
             pady=12
@@ -1951,17 +1924,6 @@ class Aplicacao:
             )
         )
 
-        self.var_btl.set(
-            texto_formatado(
-                decimal_brasileiro(
-                    linha.get(
-                        "Controle BTL",
-                        0
-                    )
-                )
-            )
-        )
-
         self.var_entrada.set(
             texto_formatado(
                 decimal_brasileiro(
@@ -1988,10 +1950,6 @@ class Aplicacao:
 
             decimal_brasileiro(
                 self.var_pre_pago.get()
-            ),
-
-            decimal_brasileiro(
-                self.var_btl.get()
             ),
 
             decimal_brasileiro(
@@ -2101,7 +2059,7 @@ class Aplicacao:
             f"PRÉ-PAGO\n"
             f"{formatar_reais(resultado['valor_pre_pago'])}\n\n"
 
-            f"CONTROLE BTL\n"
+            f"CONTROLE ENTRADA\n"
             f"{formatar_reais(resultado['controle_entrada'])}\n\n"
 
             f"SEGURO\n"
@@ -2524,7 +2482,9 @@ class Aplicacao:
 
             if resposta:
 
-               abrir_arquivo(arquivo_saida)
+                abrir_arquivo(
+                    arquivo_saida
+                )
 
             self.var_status.set(
                 (
