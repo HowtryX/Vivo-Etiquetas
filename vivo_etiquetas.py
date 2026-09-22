@@ -416,7 +416,7 @@ def calcular_etiqueta(
             valor_seguro,
 
         "controle_btl":
-            aparelho.controle_btl,
+            aparelho.controle_entrada,
 
         "parcela_12x":
             parcela_12,
