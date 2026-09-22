@@ -390,13 +390,13 @@ def calcular_etiqueta(
     )
 
     parcela_12 = calcular_parcela_price(
-        aparelho.controle_btl,
+        aparelho.controle_entrada,
         12,
         taxa_cartao
     )
 
     parcela_21 = calcular_parcela_price(
-        aparelho.controle_btl,
+        aparelho.controle_entrada,
         21,
         taxa_cartao
     )
