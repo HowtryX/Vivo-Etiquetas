@@ -357,7 +357,7 @@ class Aparelho:
         )
 
         self.controle_btl = moeda(
-            controle_btl
+            controle_entrada
         )
 
         self.controle_entrada = moeda(
@@ -367,7 +367,7 @@ class Aparelho:
     @property
     def valor_base_seguro(self):
 
-        return self.controle_btl
+        return self.controle_entrada
 
 
 # ============================================================
@@ -765,7 +765,7 @@ def gerar_pagina_preenchida(
             "btl":
                 texto_formatado(
                     etiqueta[
-                        "controle_btl"
+                        "controle_entrada"
                     ]
                 ),
 
