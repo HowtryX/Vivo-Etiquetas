@@ -2102,7 +2102,7 @@ class Aplicacao:
             f"{formatar_reais(resultado['valor_pre_pago'])}\n\n"
 
             f"CONTROLE BTL\n"
-            f"{formatar_reais(resultado['controle_btl'])}\n\n"
+            f"{formatar_reais(resultado['controle_entrada'])}\n\n"
 
             f"SEGURO\n"
             f"{formatar_reais(resultado['valor_seguro'])}\n\n"
