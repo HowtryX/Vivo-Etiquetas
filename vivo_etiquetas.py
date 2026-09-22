@@ -377,12 +377,15 @@ def calcular_etiqueta(
     valor_plano
 ):
 
+    # Todos os cálculos do aparelho
+    # usam exclusivamente o Controle Entrada.
+
     valor_pix = calcular_pix(
         aparelho.controle_entrada
     )
 
     valor_seguro = calcular_seguro(
-        aparelho.valor_base_seguro
+        aparelho.controle_entrada
     )
 
     parcela_12 = calcular_parcela_price(
@@ -580,15 +583,15 @@ def preencher_campos_etiqueta(
 
     return {
 
-        # Campo 1
+        # Campo 1 - Pré-pago
         grupo[0]:
             valores["pre_pago"],
 
-        # Campo 2
+        # Campo 2 - Seguro
         grupo[1]:
             "Vivo Seguro Celular",
 
-        # Campo 3
+        # Campo 3 - Valor do seguro
         grupo[2]:
             valores["seguro"],
 
@@ -596,39 +599,39 @@ def preencher_campos_etiqueta(
         grupo[3]:
             "10x",
 
-        # Campo 5
+        # Campo 5 - Vazio
         grupo[4]:
             "",
 
-        # Campo 6
+        # Campo 6 - Nome do aparelho
         grupo[5]:
             valores["nome"],
 
-        # Campo 7
+        # Campo 7 - Plano
         grupo[6]:
             valores["plano"],
 
-        # Campo 8
+        # Campo 8 - Valor do plano
         grupo[7]:
             valores["valor_plano"],
 
-        # Campo 9
+        # Campo 9 - CONTROLE ENTRADA
         grupo[8]:
             valores["entrada"],
 
-        # Campo 10
+        # Campo 10 - NÃO UTILIZADO
         grupo[9]:
-            valores["entrada"],
+            "",
 
-        # Campo 11
+        # Campo 11 - Parcela 21x
         grupo[10]:
             valores["parcela_21"],
 
-        # Campo 12
+        # Campo 12 - Parcela 12x
         grupo[11]:
             valores["parcela_12"],
 
-        # Campo 13
+        # Campo 13 - PIX
         grupo[12]:
             valores["pix"],
     }
