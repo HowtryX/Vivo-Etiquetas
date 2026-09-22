@@ -533,7 +533,7 @@ class ExcelRepository:
                     pre_pago,
 
                 "Controle BTL":
-                    controle_btl,
+                    controle_entrada,
 
                 "Controle Entrada":
                     controle_entrada,
