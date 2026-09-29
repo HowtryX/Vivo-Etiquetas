@@ -20,6 +20,10 @@ except ImportError:
     load_workbook = None
 
 
+# ============================================================
+# ABRIR ARQUIVO
+# ============================================================
+
 def abrir_arquivo(caminho):
     caminho = str(caminho)
 
@@ -67,6 +71,10 @@ TOTAL_CAMPOS_POR_PAGINA = (
     ETIQUETAS_POR_PAGINA
     * CAMPOS_POR_ETIQUETA
 )
+
+# Flag PDF para campo de texto multilinha.
+# Bit 13 da especificação AcroForm = Multiline.
+PDF_FLAG_MULTILINE = 4096
 
 
 # ============================================================
@@ -581,7 +589,7 @@ def preencher_campos_etiqueta(
     valores
 ):
 
-    return {
+    dados = {
 
         # Campo 1 - Pré-pago
         grupo[0]:
@@ -599,9 +607,15 @@ def preencher_campos_etiqueta(
         grupo[3]:
             "10x",
 
-        # Campo 5 - Vazio
-        grupo[4]:
-            "",
+        # ====================================================
+        # CAMPO 5
+        #
+        # IMPORTANTE:
+        # Não colocamos esse campo no dicionário.
+        #
+        # Dessa forma, se o PDF modelo já possuir um texto
+        # nesse campo, ele continuará exatamente como está.
+        # ====================================================
 
         # Campo 6 - Nome do aparelho
         grupo[5]:
@@ -635,6 +649,66 @@ def preencher_campos_etiqueta(
         grupo[12]:
             valores["pix"],
     }
+
+    return dados
+
+
+# ============================================================
+# CONFIGURA CAMPOS COMO MULTILINE
+# ============================================================
+
+def configurar_campos_multiline(
+    writer,
+    nomes_campos
+):
+    """
+    Ativa a propriedade Multiline nos campos de texto
+    que serão preenchidos.
+
+    Isso permite que textos maiores ocupem mais de uma
+    linha dentro da caixa do campo PDF.
+
+    As outras flags existentes do campo são preservadas.
+    """
+
+    try:
+
+        campos_writer = writer.get_fields()
+
+    except Exception:
+
+        return
+
+    if not campos_writer:
+        return
+
+    for nome_campo in nomes_campos:
+
+        try:
+
+            campo = campos_writer.get(
+                nome_campo
+            )
+
+            if campo is None:
+                continue
+
+            flags_atuais = campo.get(
+                "/Ff",
+                0
+            )
+
+            if flags_atuais is None:
+                flags_atuais = 0
+
+            campo.update({
+                "/Ff":
+                    int(flags_atuais)
+                    | PDF_FLAG_MULTILINE
+            })
+
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -702,7 +776,11 @@ def gerar_pagina_preenchida(
             ]
         )
 
-        # Posição vazia
+        # Posição vazia:
+        # não fazemos absolutamente nada.
+        #
+        # Isso mantém todos os campos originais
+        # daquela posição.
         if etiqueta is None:
             continue
 
@@ -789,6 +867,32 @@ def gerar_pagina_preenchida(
             grupo,
             valores
         )
+
+        # ====================================================
+        # MULTILINE
+        #
+        # Só ativamos nos campos que realmente serão
+        # preenchidos.
+        #
+        # O campo 5 fica de fora e preserva sua configuração
+        # e seu texto original.
+        # ====================================================
+
+        campos_para_multiline = list(
+            dados.keys()
+        )
+
+        configurar_campos_multiline(
+            writer,
+            campos_para_multiline
+        )
+
+        # ====================================================
+        # ATUALIZA SOMENTE OS CAMPOS NECESSÁRIOS
+        #
+        # Campos que não estão em "dados" permanecem
+        # exatamente como estavam no PDF modelo.
+        # ====================================================
 
         writer.update_page_form_field_values(
 
@@ -884,7 +988,10 @@ def gerar_pdf_completo(
                 ]
             )
 
-            # Completa a página com posições vazias
+            # Completa a página com posições vazias.
+            #
+            # Essas posições serão preservadas exatamente
+            # como estão no PDF modelo.
             while len(
                 etiquetas_da_pagina
             ) < ETIQUETAS_POR_PAGINA:
@@ -1936,7 +2043,6 @@ class Aplicacao:
                     )
                 )
             )
-        )
 
 
     # ========================================================
@@ -2392,7 +2498,9 @@ class Aplicacao:
                 self.etiquetas.copy()
             )
 
-            abrir_arquivo(caminho_preview)
+            abrir_arquivo(
+                caminho_preview
+            )
 
             paginas = math.ceil(
                 quantidade
