@@ -31,14 +31,10 @@ def abrir_arquivo(caminho):
         os.startfile(caminho)
 
     elif sys.platform == "darwin":
-        subprocess.Popen(
-            ["open", caminho]
-        )
+        subprocess.Popen(["open", caminho])
 
     else:
-        subprocess.Popen(
-            ["xdg-open", caminho]
-        )
+        subprocess.Popen(["xdg-open", caminho])
 
 
 # ============================================================
@@ -810,26 +806,16 @@ def configurar_widgets_multiline(
 def preparar_valores_para_preenchimento(
     dados
 ):
-    """
-    O pypdf permite fornecer:
-
-        (texto, fonte, tamanho)
-
-    Quando o tamanho é 0, a aparência pode utilizar
-    dimensionamento automático.
-
-    Aqui usamos a fonte já presente no próprio campo.
-
-    Se não conseguirmos identificar uma fonte específica,
-    usamos None e deixamos o pypdf utilizar a configuração
-    do campo.
-    """
 
     resultado = {}
 
     for nome, valor in dados.items():
 
-        texto = "" if valor is None else str(valor)
+        texto = (
+            ""
+            if valor is None
+            else str(valor)
+        )
 
         resultado[nome] = texto
 
@@ -990,16 +976,6 @@ def gerar_pagina_preenchida(
             valores
         )
 
-        # ====================================================
-        # MULTILINE
-        #
-        # Primeiro configuramos o campo no dicionário do
-        # formulário e depois diretamente no widget.
-        #
-        # O campo 5 não aparece em "dados", portanto fica
-        # completamente intocado.
-        # ====================================================
-
         campos_para_multiline = list(
             dados.keys()
         )
@@ -1013,25 +989,6 @@ def gerar_pagina_preenchida(
             pagina,
             campos_para_multiline
         )
-
-        # ====================================================
-        # ATUALIZA SOMENTE OS CAMPOS NECESSÁRIOS
-        # ====================================================
-        #
-        # auto_regenerate=False:
-        #
-        # Mantemos NeedAppearances desligado para evitar que
-        # o visualizador tente reconstruir globalmente todos
-        # os campos do documento.
-        #
-        # A própria atualização do pypdf gera a aparência
-        # do textbox que está sendo atualizado.
-        #
-        # flags=Multiline:
-        #
-        # Além de configurar o campo acima, reforçamos a flag
-        # durante a atualização do widget.
-        # ====================================================
 
         dados_aparencia = (
             preparar_valores_para_preenchimento(
@@ -1049,17 +1006,6 @@ def gerar_pagina_preenchida(
 
             auto_regenerate=False
         )
-
-    # ========================================================
-    # GARANTIA FINAL
-    # ========================================================
-    #
-    # O documento não deve pedir ao visualizador para
-    # regenerar TODOS os campos.
-    #
-    # Os campos que foram preenchidos já receberam suas
-    # próprias aparências durante update_page_form_field_values.
-    # ========================================================
 
     try:
 
@@ -1155,10 +1101,6 @@ def gerar_pdf_completo(
                 ]
             )
 
-            # Completa a página com posições vazias.
-            #
-            # Essas posições continuam exatamente
-            # como estão no PDF modelo.
             while len(
                 etiquetas_da_pagina
             ) < ETIQUETAS_POR_PAGINA:
@@ -1344,10 +1286,6 @@ class Aplicacao:
     ):
 
         frame = self.frame_conteudo
-
-        # ====================================================
-        # TÍTULO
-        # ====================================================
 
         titulo = ttk.Label(
             frame,
@@ -2799,4 +2737,3 @@ def main():
 if __name__ == "__main__":
 
     main()
-```
