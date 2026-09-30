@@ -1,3 +1,4 @@
+```python
 from __future__ import annotations
 
 import json
@@ -72,7 +73,6 @@ TOTAL_CAMPOS_POR_PAGINA = (
     * CAMPOS_POR_ETIQUETA
 )
 
-# Flag PDF para campo de texto multilinha.
 # Bit 13 da especificação AcroForm = Multiline.
 PDF_FLAG_MULTILINE = 4096
 
@@ -385,9 +385,6 @@ def calcular_etiqueta(
     valor_plano
 ):
 
-    # Todos os cálculos do aparelho
-    # usam exclusivamente o Controle Entrada.
-
     valor_pix = calcular_pix(
         aparelho.controle_entrada
     )
@@ -607,15 +604,7 @@ def preencher_campos_etiqueta(
         grupo[3]:
             "10x",
 
-        # ====================================================
-        # CAMPO 5
-        #
-        # IMPORTANTE:
-        # Não colocamos esse campo no dicionário.
-        #
-        # Dessa forma, se o PDF modelo já possuir um texto
-        # nesse campo, ele continuará exatamente como está.
-        # ====================================================
+        # Campo 5 NÃO É ALTERADO.
 
         # Campo 6 - Nome do aparelho
         grupo[5]:
@@ -662,13 +651,14 @@ def configurar_campos_multiline(
     nomes_campos
 ):
     """
-    Ativa a propriedade Multiline nos campos de texto
-    que serão preenchidos.
+    Ativa Multiline nos campos que realmente serão preenchidos.
 
-    Isso permite que textos maiores ocupem mais de uma
-    linha dentro da caixa do campo PDF.
+    IMPORTANTE:
+    Não percorre todos os campos do PDF.
+    Somente os campos presentes em nomes_campos são alterados.
 
-    As outras flags existentes do campo são preservadas.
+    Isso protege o campo 5 e qualquer outro campo que não esteja
+    sendo utilizado pelo programa.
     """
 
     try:
@@ -709,6 +699,142 @@ def configurar_campos_multiline(
 
         except Exception:
             pass
+
+
+# ============================================================
+# GARANTE MULTILINE DIRETAMENTE NO WIDGET
+# ============================================================
+
+def configurar_widgets_multiline(
+    pagina,
+    nomes_campos
+):
+    """
+    Alguns PDFs armazenam /Ff no objeto pai do campo,
+    enquanto outros armazenam a propriedade diretamente
+    no widget da página.
+
+    Para evitar diferenças entre visualizadores/SO, fazemos
+    a mesma configuração diretamente nos widgets que serão
+    alterados.
+
+    Isso NÃO toca widgets de campos que não serão preenchidos.
+    """
+
+    try:
+
+        anotacoes = pagina.get(
+            "/Annots",
+            []
+        )
+
+    except Exception:
+
+        return
+
+    for anotacao_ref in anotacoes:
+
+        try:
+
+            anotacao = (
+                anotacao_ref.get_object()
+            )
+
+            if anotacao.get(
+                "/Subtype"
+            ) != "/Widget":
+
+                continue
+
+            nome = anotacao.get(
+                "/T"
+            )
+
+            if nome is None:
+
+                parent = anotacao.get(
+                    "/Parent"
+                )
+
+                if parent is not None:
+
+                    nome = parent.get_object().get(
+                        "/T"
+                    )
+
+            if nome not in nomes_campos:
+
+                continue
+
+            flags_atuais = anotacao.get(
+                "/Ff"
+            )
+
+            if flags_atuais is None:
+
+                parent = anotacao.get(
+                    "/Parent"
+                )
+
+                if parent is not None:
+
+                    parent_obj = (
+                        parent.get_object()
+                    )
+
+                    flags_atuais = (
+                        parent_obj.get(
+                            "/Ff",
+                            0
+                        )
+                    )
+
+            if flags_atuais is None:
+
+                flags_atuais = 0
+
+            anotacao.update({
+                "/Ff":
+                    int(flags_atuais)
+                    | PDF_FLAG_MULTILINE
+            })
+
+        except Exception:
+
+            continue
+
+
+# ============================================================
+# PREPARA VALORES PARA APARÊNCIA
+# ============================================================
+
+def preparar_valores_para_preenchimento(
+    dados
+):
+    """
+    O pypdf permite fornecer:
+
+        (texto, fonte, tamanho)
+
+    Quando o tamanho é 0, a aparência pode utilizar
+    dimensionamento automático.
+
+    Aqui usamos a fonte já presente no próprio campo.
+
+    Se não conseguirmos identificar uma fonte específica,
+    usamos None e deixamos o pypdf utilizar a configuração
+    do campo.
+    """
+
+    resultado = {}
+
+    for nome, valor in dados.items():
+
+        texto = "" if valor is None else str(valor)
+
+        resultado[nome] = texto
+
+    return resultado
 
 
 # ============================================================
@@ -777,10 +903,7 @@ def gerar_pagina_preenchida(
         )
 
         # Posição vazia:
-        # não fazemos absolutamente nada.
-        #
-        # Isso mantém todos os campos originais
-        # daquela posição.
+        # absolutamente nada é alterado.
         if etiqueta is None:
             continue
 
@@ -871,11 +994,11 @@ def gerar_pagina_preenchida(
         # ====================================================
         # MULTILINE
         #
-        # Só ativamos nos campos que realmente serão
-        # preenchidos.
+        # Primeiro configuramos o campo no dicionário do
+        # formulário e depois diretamente no widget.
         #
-        # O campo 5 fica de fora e preserva sua configuração
-        # e seu texto original.
+        # O campo 5 não aparece em "dados", portanto fica
+        # completamente intocado.
         # ====================================================
 
         campos_para_multiline = list(
@@ -887,38 +1010,64 @@ def gerar_pagina_preenchida(
             campos_para_multiline
         )
 
+        configurar_widgets_multiline(
+            pagina,
+            campos_para_multiline
+        )
+
         # ====================================================
         # ATUALIZA SOMENTE OS CAMPOS NECESSÁRIOS
+        # ====================================================
         #
-        # Campos que não estão em "dados" permanecem
-        # exatamente como estavam no PDF modelo.
+        # auto_regenerate=False:
+        #
+        # Mantemos NeedAppearances desligado para evitar que
+        # o visualizador tente reconstruir globalmente todos
+        # os campos do documento.
+        #
+        # A própria atualização do pypdf gera a aparência
+        # do textbox que está sendo atualizado.
+        #
+        # flags=Multiline:
+        #
+        # Além de configurar o campo acima, reforçamos a flag
+        # durante a atualização do widget.
         # ====================================================
 
-        # IMPORTANTE:
-        # Não peça ao pypdf para regenerar automaticamente a aparência
-        # de todos os campos do PDF.
-        #
-        # Com auto_regenerate=True, alguns visualizadores/sistemas
-        # podem reconstruir a aparência dos campos que NÃO foram
-        # alterados. Isso pode fazer fontes/tamanhos de campos
-        # intocados mudarem, especialmente entre Windows e Linux.
-        #
-        # auto_regenerate=False mantém a alteração restrita aos campos
-        # presentes em "dados" e evita o pedido global de regeneração.
+        dados_aparencia = (
+            preparar_valores_para_preenchimento(
+                dados
+            )
+        )
+
         writer.update_page_form_field_values(
 
             pagina,
 
-            dados,
+            dados_aparencia,
+
+            flags=PDF_FLAG_MULTILINE,
 
             auto_regenerate=False
         )
 
-    # Reforço de segurança:
-    # o PDF final não deve pedir ao visualizador para regenerar
-    # automaticamente as aparências dos campos.
+    # ========================================================
+    # GARANTIA FINAL
+    # ========================================================
+    #
+    # O documento não deve pedir ao visualizador para
+    # regenerar TODOS os campos.
+    #
+    # Os campos que foram preenchidos já receberam suas
+    # próprias aparências durante update_page_form_field_values.
+    # ========================================================
+
     try:
-        writer.set_need_appearances_writer(False)
+
+        writer.set_need_appearances_writer(
+            False
+        )
+
     except Exception:
         pass
 
@@ -1009,7 +1158,7 @@ def gerar_pdf_completo(
 
             # Completa a página com posições vazias.
             #
-            # Essas posições serão preservadas exatamente
+            # Essas posições continuam exatamente
             # como estão no PDF modelo.
             while len(
                 etiquetas_da_pagina
@@ -2651,3 +2800,4 @@ def main():
 if __name__ == "__main__":
 
     main()
+```
