@@ -13,6 +13,7 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from pypdf import PdfReader, PdfWriter
+from pypdf.generic import NumberObject
 
 try:
     from openpyxl import load_workbook
@@ -650,15 +651,14 @@ def configurar_campos_multiline(
     nomes_campos
 ):
     """
-    Ativa Multiline SOMENTE nos campos que serão preenchidos.
+    Ativa Multiline SOMENTE nos campos informados.
 
-    Não percorre todos os campos do PDF.
+    IMPORTANTE:
+    O valor de /Ff precisa ser um NumberObject do pypdf,
+    e não um int Python puro.
 
-    Além disso, preserva todas as flags existentes:
-        flags_novas = flags_atuais | PDF_FLAG_MULTILINE
-
-    Portanto, não substituímos configurações existentes
-    do PDF.
+    Isso preserva a estrutura interna do PDF durante a
+    gravação.
     """
 
     try:
@@ -691,10 +691,16 @@ def configurar_campos_multiline(
             if flags_atuais is None:
                 flags_atuais = 0
 
+            flags_novas = (
+                int(flags_atuais)
+                | PDF_FLAG_MULTILINE
+            )
+
             campo.update({
                 "/Ff":
-                    int(flags_atuais)
-                    | PDF_FLAG_MULTILINE
+                    NumberObject(
+                        flags_novas
+                    )
             })
 
         except Exception:
@@ -713,11 +719,11 @@ def configurar_widgets_multiline(
     """
     Ativa Multiline diretamente no widget do campo.
 
-    Isso é importante porque alguns PDFs possuem /Ff
-    no campo pai e outros podem armazenar propriedades
-    diretamente no widget.
+    O valor de /Ff é gravado como NumberObject para evitar
+    que o pypdf encontre um int Python puro durante a
+    serialização do PDF.
 
-    SOMENTE os widgets que serão preenchidos são tocados.
+    SOMENTE os widgets dos campos informados são tocados.
     """
 
     try:
@@ -793,10 +799,16 @@ def configurar_widgets_multiline(
 
                 flags_atuais = 0
 
+            flags_novas = (
+                int(flags_atuais)
+                | PDF_FLAG_MULTILINE
+            )
+
             anotacao.update({
                 "/Ff":
-                    int(flags_atuais)
-                    | PDF_FLAG_MULTILINE
+                    NumberObject(
+                        flags_novas
+                    )
             })
 
         except Exception:
@@ -983,7 +995,7 @@ def gerar_pagina_preenchida(
         # ----------------------------------------------------
         # MONTA SOMENTE OS CAMPOS QUE DEVEM SER PREENCHIDOS.
         #
-        # O campo 5 não entra neste dicionário.
+        # O campo 5 NÃO entra neste dicionário.
         # ----------------------------------------------------
 
         dados = preencher_campos_etiqueta(
@@ -991,9 +1003,18 @@ def gerar_pagina_preenchida(
             valores
         )
 
-        campos_para_multiline = list(
-            dados.keys()
-        )
+        # ----------------------------------------------------
+        # SOMENTE O CAMPO DO NOME DO APARELHO RECEBE MULTILINE.
+        #
+        # grupo[5] = Campo 6
+        #
+        # Isso evita alterar desnecessariamente a aparência
+        # dos demais campos.
+        # ----------------------------------------------------
+
+        campos_para_multiline = [
+            grupo[5]
+        ]
 
         # ----------------------------------------------------
         # ATIVA MULTILINE NO CAMPO PAI
@@ -1022,20 +1043,13 @@ def gerar_pagina_preenchida(
         # ----------------------------------------------------
         # IMPORTANTE:
         #
-        # NÃO usamos:
+        # NÃO usamos flags=PDF_FLAG_MULTILINE.
         #
-        #     flags=PDF_FLAG_MULTILINE
+        # As flags foram aplicadas diretamente somente no
+        # campo que precisa ser multiline.
         #
-        # aqui.
-        #
-        # A flag já foi aplicada diretamente no campo/widget.
-        #
-        # Assim o pypdf não recebe uma nova máscara de flags
-        # capaz de substituir outras propriedades existentes.
-        #
-        # Com o campo marcado como Multiline, a geração da
-        # aparência do pypdf usa o próprio campo do PDF para
-        # determinar a área disponível.
+        # Dessa forma o pypdf não substitui as demais flags
+        # existentes.
         # ----------------------------------------------------
 
         writer.update_page_form_field_values(
@@ -1049,12 +1063,6 @@ def gerar_pagina_preenchida(
 
     # ========================================================
     # NÃO PEDIR PARA O VISUALIZADOR REGERAR A APARÊNCIA
-    # ========================================================
-    #
-    # A aparência já foi gerada pelo pypdf.
-    #
-    # Isso também ajuda a evitar que cada visualizador/SO
-    # tente interpretar o formulário de uma maneira diferente.
     # ========================================================
 
     try:
@@ -2208,7 +2216,6 @@ class Aplicacao:
                     )
                 )
             )
-        )
 
 
     # ========================================================
