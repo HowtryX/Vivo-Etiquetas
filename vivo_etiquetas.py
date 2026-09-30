@@ -638,11 +638,11 @@ def preencher_campos_etiqueta(
             valores["entrada"],
 
         # Campo 11 - Parcela 21x
-        grupo[10]:
+        grupo[11]:
             valores["parcela_21"],
 
         # Campo 12 - Parcela 12x
-        grupo[11]:
+        grupo[10]:
             valores["parcela_12"],
 
         # Campo 13 - PIX
