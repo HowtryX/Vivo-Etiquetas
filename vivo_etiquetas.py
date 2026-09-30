@@ -68,7 +68,8 @@ TOTAL_CAMPOS_POR_PAGINA = (
     * CAMPOS_POR_ETIQUETA
 )
 
-# Bit 13 da especificação AcroForm = Multiline.
+# Flag AcroForm:
+# Multiline = bit 13 = 4096
 PDF_FLAG_MULTILINE = 4096
 
 
@@ -599,7 +600,10 @@ def preencher_campos_etiqueta(
         grupo[3]:
             "10x",
 
-        # Campo 5 NÃO É ALTERADO.
+        # ====================================================
+        # CAMPO 5:
+        # NÃO É ALTERADO.
+        # ====================================================
 
         # Campo 6 - Nome do aparelho
         grupo[5]:
@@ -613,11 +617,11 @@ def preencher_campos_etiqueta(
         grupo[7]:
             valores["valor_plano"],
 
-        # Campo 9 - CONTROLE ENTRADA
+        # Campo 9 - Controle Entrada
         grupo[8]:
             valores["entrada"],
 
-        # Campo 10 - CONTROLE ENTRADA
+        # Campo 10 - Controle Entrada
         grupo[9]:
             valores["entrada"],
 
@@ -629,7 +633,7 @@ def preencher_campos_etiqueta(
         grupo[10]:
             valores["parcela_12"],
 
-        # Campo 13 - PIX
+        # Campo 13 - Pix
         grupo[12]:
             valores["pix"],
     }
@@ -646,14 +650,15 @@ def configurar_campos_multiline(
     nomes_campos
 ):
     """
-    Ativa Multiline nos campos que realmente serão preenchidos.
+    Ativa Multiline SOMENTE nos campos que serão preenchidos.
 
-    IMPORTANTE:
     Não percorre todos os campos do PDF.
-    Somente os campos presentes em nomes_campos são alterados.
 
-    Isso protege o campo 5 e qualquer outro campo que não esteja
-    sendo utilizado pelo programa.
+    Além disso, preserva todas as flags existentes:
+        flags_novas = flags_atuais | PDF_FLAG_MULTILINE
+
+    Portanto, não substituímos configurações existentes
+    do PDF.
     """
 
     try:
@@ -693,7 +698,8 @@ def configurar_campos_multiline(
             })
 
         except Exception:
-            pass
+
+            continue
 
 
 # ============================================================
@@ -705,15 +711,13 @@ def configurar_widgets_multiline(
     nomes_campos
 ):
     """
-    Alguns PDFs armazenam /Ff no objeto pai do campo,
-    enquanto outros armazenam a propriedade diretamente
-    no widget da página.
+    Ativa Multiline diretamente no widget do campo.
 
-    Para evitar diferenças entre visualizadores/SO, fazemos
-    a mesma configuração diretamente nos widgets que serão
-    alterados.
+    Isso é importante porque alguns PDFs possuem /Ff
+    no campo pai e outros podem armazenar propriedades
+    diretamente no widget.
 
-    Isso NÃO toca widgets de campos que não serão preenchidos.
+    SOMENTE os widgets que serão preenchidos são tocados.
     """
 
     try:
@@ -725,6 +729,9 @@ def configurar_widgets_multiline(
 
     except Exception:
 
+        return
+
+    if not anotacoes:
         return
 
     for anotacao_ref in anotacoes:
@@ -745,44 +752,42 @@ def configurar_widgets_multiline(
                 "/T"
             )
 
-            if nome is None:
+            parent = anotacao.get(
+                "/Parent"
+            )
 
-                parent = anotacao.get(
-                    "/Parent"
+            parent_obj = None
+
+            if parent is not None:
+
+                parent_obj = (
+                    parent.get_object()
                 )
 
-                if parent is not None:
+            # Alguns widgets não possuem /T próprio.
+            if nome is None and parent_obj is not None:
 
-                    nome = parent.get_object().get(
-                        "/T"
-                    )
+                nome = parent_obj.get(
+                    "/T"
+                )
 
             if nome not in nomes_campos:
 
                 continue
 
+            # Primeiro tentamos manter as flags do widget.
             flags_atuais = anotacao.get(
                 "/Ff"
             )
 
-            if flags_atuais is None:
+            # Se o widget não tiver flags,
+            # procuramos no campo pai.
+            if flags_atuais is None and parent_obj is not None:
 
-                parent = anotacao.get(
-                    "/Parent"
+                flags_atuais = parent_obj.get(
+                    "/Ff",
+                    0
                 )
-
-                if parent is not None:
-
-                    parent_obj = (
-                        parent.get_object()
-                    )
-
-                    flags_atuais = (
-                        parent_obj.get(
-                            "/Ff",
-                            0
-                        )
-                    )
 
             if flags_atuais is None:
 
@@ -800,7 +805,7 @@ def configurar_widgets_multiline(
 
 
 # ============================================================
-# PREPARA VALORES PARA APARÊNCIA
+# PREPARA VALORES PARA PREENCHIMENTO
 # ============================================================
 
 def preparar_valores_para_preenchimento(
@@ -887,8 +892,12 @@ def gerar_pagina_preenchida(
             ]
         )
 
-        # Posição vazia:
-        # absolutamente nada é alterado.
+        # ----------------------------------------------------
+        # POSIÇÃO VAZIA
+        #
+        # Não fazemos absolutamente nada.
+        # ----------------------------------------------------
+
         if etiqueta is None:
             continue
 
@@ -971,6 +980,12 @@ def gerar_pagina_preenchida(
                 ),
         }
 
+        # ----------------------------------------------------
+        # MONTA SOMENTE OS CAMPOS QUE DEVEM SER PREENCHIDOS.
+        #
+        # O campo 5 não entra neste dicionário.
+        # ----------------------------------------------------
+
         dados = preencher_campos_etiqueta(
             grupo,
             valores
@@ -980,10 +995,18 @@ def gerar_pagina_preenchida(
             dados.keys()
         )
 
+        # ----------------------------------------------------
+        # ATIVA MULTILINE NO CAMPO PAI
+        # ----------------------------------------------------
+
         configurar_campos_multiline(
             writer,
             campos_para_multiline
         )
+
+        # ----------------------------------------------------
+        # ATIVA MULTILINE NO WIDGET
+        # ----------------------------------------------------
 
         configurar_widgets_multiline(
             pagina,
@@ -996,16 +1019,43 @@ def gerar_pagina_preenchida(
             )
         )
 
+        # ----------------------------------------------------
+        # IMPORTANTE:
+        #
+        # NÃO usamos:
+        #
+        #     flags=PDF_FLAG_MULTILINE
+        #
+        # aqui.
+        #
+        # A flag já foi aplicada diretamente no campo/widget.
+        #
+        # Assim o pypdf não recebe uma nova máscara de flags
+        # capaz de substituir outras propriedades existentes.
+        #
+        # Com o campo marcado como Multiline, a geração da
+        # aparência do pypdf usa o próprio campo do PDF para
+        # determinar a área disponível.
+        # ----------------------------------------------------
+
         writer.update_page_form_field_values(
 
             pagina,
 
             dados_aparencia,
 
-            flags=PDF_FLAG_MULTILINE,
-
             auto_regenerate=False
         )
+
+    # ========================================================
+    # NÃO PEDIR PARA O VISUALIZADOR REGERAR A APARÊNCIA
+    # ========================================================
+    #
+    # A aparência já foi gerada pelo pypdf.
+    #
+    # Isso também ajuda a evitar que cada visualizador/SO
+    # tente interpretar o formulário de uma maneira diferente.
+    # ========================================================
 
     try:
 
@@ -1014,6 +1064,7 @@ def gerar_pagina_preenchida(
         )
 
     except Exception:
+
         pass
 
     # ========================================================
@@ -1130,6 +1181,10 @@ def gerar_pdf_completo(
                 reader_pagina.pages[0]
             )
 
+        # ----------------------------------------------------
+        # SALVA O PDF FINAL
+        # ----------------------------------------------------
+
         with open(
             arquivo_saida,
             "wb"
@@ -1141,6 +1196,10 @@ def gerar_pdf_completo(
 
     finally:
 
+        # ----------------------------------------------------
+        # REMOVE PDFs TEMPORÁRIOS
+        # ----------------------------------------------------
+
         for caminho in arquivos_temporarios:
 
             try:
@@ -1150,6 +1209,7 @@ def gerar_pdf_completo(
                 )
 
             except OSError:
+
                 pass
 
 
