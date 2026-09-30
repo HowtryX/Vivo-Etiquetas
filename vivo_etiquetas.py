@@ -894,14 +894,33 @@ def gerar_pagina_preenchida(
         # exatamente como estavam no PDF modelo.
         # ====================================================
 
+        # IMPORTANTE:
+        # Não peça ao pypdf para regenerar automaticamente a aparência
+        # de todos os campos do PDF.
+        #
+        # Com auto_regenerate=True, alguns visualizadores/sistemas
+        # podem reconstruir a aparência dos campos que NÃO foram
+        # alterados. Isso pode fazer fontes/tamanhos de campos
+        # intocados mudarem, especialmente entre Windows e Linux.
+        #
+        # auto_regenerate=False mantém a alteração restrita aos campos
+        # presentes em "dados" e evita o pedido global de regeneração.
         writer.update_page_form_field_values(
 
             pagina,
 
             dados,
 
-            auto_regenerate=True
+            auto_regenerate=False
         )
+
+    # Reforço de segurança:
+    # o PDF final não deve pedir ao visualizador para regenerar
+    # automaticamente as aparências dos campos.
+    try:
+        writer.set_need_appearances_writer(False)
+    except Exception:
+        pass
 
     # ========================================================
     # SALVAR PÁGINA TEMPORÁRIA
