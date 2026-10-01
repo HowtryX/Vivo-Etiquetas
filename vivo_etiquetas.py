@@ -6,6 +6,7 @@ import sys
 import subprocess
 import tempfile
 import math
+import re
 from decimal import Decimal, ROUND_HALF_UP
 from pathlib import Path
 
@@ -817,6 +818,230 @@ def configurar_widgets_multiline(
 
 
 # ============================================================
+# QUEBRA AUTOMÁTICA DE TEXTO
+# ============================================================
+
+def _extrair_tamanho_fonte_da_da(
+    widget
+):
+    """Tenta descobrir o tamanho da fonte definido em /DA."""
+
+    try:
+
+        da = widget.get(
+            "/DA",
+            ""
+        )
+
+        if da:
+
+            encontrados = re.findall(
+                r"(-?\\d+(?:\\.\\d+)?)\\s+Tf",
+                str(da)
+            )
+
+            if encontrados:
+
+                tamanho = float(
+                    encontrados[-1]
+                )
+
+                if tamanho > 0:
+                    return tamanho
+
+    except Exception:
+
+        pass
+
+    return 9.0
+
+
+def quebrar_texto_automaticamente(
+    pagina,
+    nome_campo,
+    texto
+):
+    """
+    Insere quebras de linha somente quando necessário para que o
+    texto do campo caiba na largura disponível.
+
+    A quebra é feita por palavras e, quando uma palavra sozinha é
+    maior que o espaço disponível, ela também pode ser quebrada.
+    Isso complementa o Multiline do AcroForm e evita depender de
+    como cada visualizador (Linux/Windows) decide desenhar o campo.
+    """
+
+    texto = "" if texto is None else str(texto)
+
+    if not texto or "\\n" in texto:
+        return texto
+
+    widget_alvo = None
+
+    try:
+
+        anotacoes = pagina.get(
+            "/Annots",
+            []
+        )
+
+        for anotacao_ref in anotacoes:
+
+            anotacao = anotacao_ref.get_object()
+
+            if anotacao.get(
+                "/Subtype"
+            ) != "/Widget":
+                continue
+
+            nome = anotacao.get(
+                "/T"
+            )
+
+            parent = anotacao.get(
+                "/Parent"
+            )
+
+            parent_obj = None
+
+            if parent is not None:
+                parent_obj = parent.get_object()
+
+            if nome is None and parent_obj is not None:
+                nome = parent_obj.get(
+                    "/T"
+                )
+
+            if nome == nome_campo:
+                widget_alvo = anotacao
+                break
+
+    except Exception:
+
+        return texto
+
+    if widget_alvo is None:
+        return texto
+
+    try:
+
+        rect = widget_alvo.get(
+            "/Rect"
+        )
+
+        if rect is None:
+            return texto
+
+        x0, y0, x1, y1 = [
+            float(valor)
+            for valor in rect
+        ]
+
+        largura = abs(x1 - x0)
+
+        if largura <= 0:
+            return texto
+
+        tamanho_fonte = _extrair_tamanho_fonte_da_da(
+            widget_alvo
+        )
+
+        parent = widget_alvo.get(
+            "/Parent"
+        )
+
+        if parent is not None:
+
+            parent_obj = parent.get_object()
+
+            if not widget_alvo.get("/DA"):
+
+                tamanho_fonte = _extrair_tamanho_fonte_da_da(
+                    parent_obj
+                )
+
+        # Margem pequena para não deixar o texto encostar nas bordas.
+        largura_util = max(
+            1.0,
+            largura - (tamanho_fonte * 0.45)
+        )
+
+        # Estimativa conservadora da largura média de um caractere.
+        # Ela evita depender do sistema operacional ou da fonte instalada.
+        largura_media = max(
+            1.0,
+            tamanho_fonte * 0.55
+        )
+
+        caracteres_por_linha = max(
+            1,
+            int(
+                largura_util
+                / largura_media
+            )
+        )
+
+        palavras = texto.split()
+
+        if not palavras:
+            return texto
+
+        linhas = []
+        linha_atual = ""
+
+        for palavra in palavras:
+
+            candidato = (
+                palavra
+                if not linha_atual
+                else linha_atual + " " + palavra
+            )
+
+            if len(candidato) <= caracteres_por_linha:
+
+                linha_atual = candidato
+                continue
+
+            if linha_atual:
+
+                linhas.append(
+                    linha_atual
+                )
+                linha_atual = ""
+
+            # Palavra maior que uma linha: divide em blocos para
+            # garantir que nenhum trecho fique inevitavelmente fora.
+            while len(palavra) > caracteres_por_linha:
+
+                linhas.append(
+                    palavra[
+                        :caracteres_por_linha
+                    ]
+                )
+
+                palavra = palavra[
+                    caracteres_por_linha:
+                ]
+
+            linha_atual = palavra
+
+        if linha_atual:
+            linhas.append(
+                linha_atual
+            )
+
+        return "\\n".join(
+            linhas
+        )
+
+    except Exception:
+
+        # Se não for possível obter a geometria do campo, deixamos o
+        # AcroForm Multiline cuidar do texto normalmente.
+        return texto
+
+
+# ============================================================
 # PREPARA VALORES PARA PREENCHIMENTO
 # ============================================================
 
@@ -1033,6 +1258,23 @@ def gerar_pagina_preenchida(
             pagina,
             campos_para_multiline
         )
+
+        # ----------------------------------------------------
+        # QUEBRA AUTOMÁTICA DO NOME DO APARELHO
+        #
+        # O campo já é Multiline, mas inserimos as quebras no valor
+        # também. Assim a aparência gerada pelo pypdf não depende do
+        # comportamento do visualizador do PDF no Linux ou Windows.
+        # Nenhum outro campo é alterado.
+        # ----------------------------------------------------
+
+        if grupo[5] in dados:
+
+            dados[grupo[5]] = quebrar_texto_automaticamente(
+                pagina,
+                grupo[5],
+                dados[grupo[5]]
+            )
 
         dados_aparencia = (
             preparar_valores_para_preenchimento(
