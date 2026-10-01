@@ -1029,7 +1029,7 @@ def gerar_pagina_preenchida(
             campos_para_multiline
         )
 
-        dados_aparencia = (
+        dados_aparencia = ()
         # ----------------------------------------------------
         # IMPORTANTE:
         #
