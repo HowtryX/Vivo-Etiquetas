@@ -836,7 +836,7 @@ def _extrair_tamanho_fonte_da_da(
         if da:
 
             encontrados = re.findall(
-                r"(-?\\d+(?:\\.\\d+)?)\\s+Tf",
+                r"(-?\d+(?:\.\d+)?)\s+Tf",
                 str(da)
             )
 
@@ -873,7 +873,7 @@ def quebrar_texto_automaticamente(
 
     texto = "" if texto is None else str(texto)
 
-    if not texto or "\\n" in texto:
+    if not texto or "\n" in texto:
         return texto
 
     widget_alvo = None
@@ -1030,7 +1030,7 @@ def quebrar_texto_automaticamente(
                 linha_atual
             )
 
-        return "\\n".join(
+        return "\n".join(
             linhas
         )
 
@@ -1229,51 +1229,50 @@ def gerar_pagina_preenchida(
         )
 
         # ----------------------------------------------------
-        # SOMENTE O CAMPO DO NOME DO APARELHO RECEBE MULTILINE.
+        # QUEBRA AUTOMÁTICA BASEADA NO TAMANHO REAL DO CAMPO.
         #
-        # grupo[5] = Campo 6
-        #
-        # Isso evita alterar desnecessariamente a aparência
-        # dos demais campos.
+        # Cada campo preenchido é analisado pelo /Rect do próprio
+        # PDF. O campo 5 continua intocado porque não está em 'dados'.
+        # Só campos que realmente precisam de quebra recebem
+        # Multiline.
         # ----------------------------------------------------
 
-        campos_para_multiline = [
-            grupo[5]
-        ]
+        campos_multiline = []
 
-        # ----------------------------------------------------
-        # ATIVA MULTILINE NO CAMPO PAI
-        # ----------------------------------------------------
+        for nome_campo in list(dados.keys()):
 
-        configurar_campos_multiline(
-            writer,
-            campos_para_multiline
-        )
+            texto_original = (
+                ""
+                if dados[nome_campo] is None
+                else str(dados[nome_campo])
+            )
 
-        # ----------------------------------------------------
-        # ATIVA MULTILINE NO WIDGET
-        # ----------------------------------------------------
+            texto_quebrado = (
+                quebrar_texto_automaticamente(
+                    pagina,
+                    nome_campo,
+                    texto_original
+                )
+            )
 
-        configurar_widgets_multiline(
-            pagina,
-            campos_para_multiline
-        )
+            dados[nome_campo] = texto_quebrado
 
-        # ----------------------------------------------------
-        # QUEBRA AUTOMÁTICA DO NOME DO APARELHO
-        #
-        # O campo já é Multiline, mas inserimos as quebras no valor
-        # também. Assim a aparência gerada pelo pypdf não depende do
-        # comportamento do visualizador do PDF no Linux ou Windows.
-        # Nenhum outro campo é alterado.
-        # ----------------------------------------------------
+            if "\n" in texto_quebrado:
 
-        if grupo[5] in dados:
+                campos_multiline.append(
+                    nome_campo
+                )
 
-            dados[grupo[5]] = quebrar_texto_automaticamente(
+        if campos_multiline:
+
+            configurar_campos_multiline(
+                writer,
+                campos_multiline
+            )
+
+            configurar_widgets_multiline(
                 pagina,
-                grupo[5],
-                dados[grupo[5]]
+                campos_multiline
             )
 
         dados_aparencia = (
