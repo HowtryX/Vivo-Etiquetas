@@ -62,13 +62,19 @@ COL_NOME = "E"
 COL_PRE_PAGO = "F"
 COL_ENTRADA = "AX"
 
-# PDF (modelo: 2 colunas x 4 linhas = 8 etiquetas por página)
-ETIQUETAS_POR_PAGINA = 8
+# PDF
+# O número de etiquetas por página é descoberto no próprio PDF modelo
+# (função definir_capacidade). 10 é só o valor inicial.
+ETIQUETAS_POR_PAGINA = 10
 CAMPOS_POR_ETIQUETA = 13
 
-# Textos fixos escritos em toda etiqueta
+# Textos fixos escritos em toda etiqueta (ficam iguais ao modelo se já forem
+# iguais; só são reescritos quando diferentes)
 SEGURO_NOME = "Vivo Seguro Celular"
-SEGURO_MESES = "12"
+SEGURO_MESES = "10x"
+
+# Nome do aparelho em MAIÚSCULAS? (False = como está no Excel)
+NOME_EM_MAIUSCULAS = False
 
 # Tamanho mínimo da letra quando o texto precisa "encolher" para caber
 TAMANHO_MINIMO = 5.0
@@ -340,11 +346,10 @@ def mapear_etiquetas(pagina):
 
     ancoras = [w for w in widgets if w["nome"].upper().startswith("TL")]
 
-    if len(ancoras) != ETIQUETAS_POR_PAGINA:
+    if not ancoras:
         raise ValueError(
-            "O PDF modelo não tem a estrutura esperada.\n\n"
-            f"Etiquetas encontradas na página 1: {len(ancoras)}\n"
-            f"Esperadas: {ETIQUETAS_POR_PAGINA}"
+            "O PDF modelo não tem a estrutura esperada: "
+            "nenhuma etiqueta foi encontrada na página 1."
         )
 
     ancoras.sort(key=lambda a: (-round(a["y0"]), a["x0"]))
@@ -393,12 +398,19 @@ def mapear_etiquetas(pagina):
                 papeis["seguro_nome"] = w
             elif n.startswith("TEXT FIELD"):
                 papeis["pix"] = w
-            elif n.startswith("12X"):
+            elif n.startswith("12X") or n.startswith("PARCELA SEGURO"):
                 papeis["seguro_meses"] = w
             elif n.startswith("NOME DO APARELHO"):
                 papeis["nome"] = w
             elif n.startswith("PRE"):
                 precos.append(w)
+
+        # Se o modelo não tem um campo "Text Field" (PIX), o PIX é o campo
+        # numérico de maior altura (fonte grande).
+        if "pix" not in papeis and precos:
+            pix = max(precos, key=lambda w: w["y1"] - w["y0"])
+            precos.remove(pix)
+            papeis["pix"] = pix
 
         esquerda = sorted(
             [w for w in precos if w["x0"] - ancora["x0"] < 50],
@@ -434,8 +446,8 @@ def mapear_etiquetas(pagina):
 # que o próprio PDF já tem. Posição, fonte, cor e fundo ficam idênticos.
 
 _RE_TF = re.compile(r"/(\S+)\s+([\d.]+)\s+Tf")
-_RE_TD = re.compile(r"([-\d.]+)\s+([-\d.]+)\s+Td")
-_RE_ET = re.compile(r"\bET\b")
+
+ESPACAMENTO_LINHAS = 1.242   # igual ao do modelo (9,936 pt para letra 8)
 
 
 def _num(valor):
@@ -477,6 +489,15 @@ def _largura_texto(fonte, dados, tamanho):
     return total * tamanho / 1000.0
 
 
+def _ascent_descent(fonte):
+    """Ascent/descent da fonte em fração do tamanho (ex.: 1.005 / -0.287)."""
+    try:
+        fd = fonte["/FontDescriptor"].get_object()
+        return _num(fd["/Ascent"]) / 1000.0, _num(fd["/Descent"]) / 1000.0
+    except Exception:
+        return 0.95, -0.25
+
+
 def _quebrar_linhas(texto, fonte, tamanho, largura):
     linhas = []
     atual = ""
@@ -496,47 +517,70 @@ def _quebrar_linhas(texto, fonte, tamanho, largura):
     return linhas
 
 
+def _da_do_campo(anot):
+    da = anot.get("/DA")
+    if da is None and anot.get("/Parent") is not None:
+        da = anot["/Parent"].get_object().get("/DA")
+    return str(da) if da is not None else ""
+
+
 def definir_texto_campo(writer, widget, texto, multilinha=False):
-    """Troca o texto de um campo mantendo o visual original."""
+    """
+    Escreve o texto de um campo (vazio ou preenchido) montando a aparência
+    do zero, com as mesmas regras de posição do modelo. Fundo (ex.: cinza
+    dos campos de plano) e demais elementos da aparência são mantidos.
+    """
     anot = widget["anot"]
     ap = anot["/AP"]["/N"].get_object()
 
     dados = ap.get_data().decode("latin-1")
 
-    m_tf = _RE_TF.search(dados)
-    m_td = _RE_TD.search(dados, m_tf.end()) if m_tf else None
+    # Tudo que vem ANTES do texto (ex.: retângulo cinza de fundo) é mantido
+    corte = dados.find("/Tx BMC")
+    prefixo = dados[:corte] if corte >= 0 else dados
 
-    if not m_tf or not m_td:
+    # Fonte e tamanho vêm do /DA do campo; se for "automático" (0),
+    # usa o tamanho que já está na aparência atual.
+    m = _RE_TF.search(_da_do_campo(anot)) or _RE_TF.search(dados)
+    if not m:
         return
 
-    m_et = _RE_ET.search(dados, m_td.start())
-    if not m_et:
-        return
-
-    fonte_nome = m_tf.group(1)
-    tamanho = float(m_tf.group(2))
-    x_inicial, y_inicial = m_td.group(1), m_td.group(2)
+    fonte_nome = m.group(1)
+    tamanho = float(m.group(2))
 
     bbox = [float(v) for v in ap["/BBox"]]
-    largura = (bbox[2] - bbox[0]) - 4
-    altura = (bbox[3] - bbox[1]) - 4
+    w = bbox[2] - bbox[0]
+    h = bbox[3] - bbox[1]
 
-    fonte = _fontes_do_formulario(writer).get("/" + fonte_nome)
+    if tamanho <= 0:
+        m_ap = _RE_TF.search(dados)
+        tamanho = float(m_ap.group(2)) if m_ap and float(m_ap.group(2)) > 0 else round(h * 0.6177, 3)
+
+    fontes = _fontes_do_formulario(writer)
+    fonte = fontes.get("/" + fonte_nome)
+    fonte = fonte.get_object() if fonte is not None else None
+
+    largura = w - 4
     texto = str(texto)
 
-    # ----- escolhe tamanho/linhas -----
+    asc, desc = _ascent_descent(fonte) if fonte is not None else (0.95, -0.25)
+
+    # ----- escolhe tamanho e quebra de linhas -----
     if multilinha:
         linhas = _quebrar_linhas(texto, fonte, tamanho, largura) if fonte else [texto]
 
-        while (
-            fonte
-            and tamanho > TAMANHO_MINIMO
-            and (len(linhas) * tamanho > altura
-                 or any(_largura_texto(fonte, _codificar(l), tamanho) > largura
-                        for l in linhas))
-        ):
+        def cabe(tam, lns):
+            return (
+                len(lns) * tam * ESPACAMENTO_LINHAS <= h - 4
+                and all(_largura_texto(fonte, _codificar(l), tam) <= largura for l in lns)
+            )
+
+        while fonte and tamanho > TAMANHO_MINIMO and not cabe(tamanho, linhas):
             tamanho -= 0.25
             linhas = _quebrar_linhas(texto, fonte, tamanho, largura)
+
+        lead = tamanho * ESPACAMENTO_LINHAS
+        y_inicial = h - 2 - lead
     else:
         linhas = [texto]
 
@@ -547,31 +591,35 @@ def definir_texto_campo(writer, widget, texto, multilinha=False):
         ):
             tamanho -= 0.25
 
-    # ----- monta o novo bloco de texto -----
-    partes = []
+        lead = 0
+        # centralizado na vertical (mesma conta do modelo)
+        y_inicial = (h - (asc - desc) * tamanho) / 2 - desc * tamanho
+
+    # ----- monta a aparência -----
+    corpo = (
+        "/Tx BMC\nq\n"
+        f"1 1 {w - 2:.4f} {h - 2:.4f} re\nW\nn\n"
+        f"BT\n/{fonte_nome} {tamanho:g} Tf\n0 g\n"
+    )
+
     for i, linha in enumerate(linhas or [""]):
         literal = _literal_pdf(_codificar(linha))
         if i == 0:
-            partes.append(f"{x_inicial} {y_inicial} Td\n({literal}) Tj\n")
+            corpo += f"2 {y_inicial:.4f} Td\n({literal}) Tj\n"
         else:
-            partes.append(f"0 -{tamanho:g} Td\n({literal}) Tj\n")
+            corpo += f"0 -{lead:.4f} Td\n({literal}) Tj\n"
 
-    novo_tf = f"/{fonte_nome} {tamanho:g} Tf"
+    corpo += "ET\nQ\nEMC\n"
 
-    dados = (
-        dados[:m_tf.start()]
-        + novo_tf
-        + dados[m_tf.end():m_td.start()]
-        + "".join(partes)
-        + dados[m_et.start():]
-    )
-
-    # Cria um novo stream de aparência (evita problemas com streams comprimidos)
     novo = DecodedStreamObject()
     for chave, valor in ap.items():
-        if chave not in ("/Length", "/Filter", "/DecodeParms"):
+        if chave not in ("/Length", "/Filter", "/DecodeParms", "/Resources"):
             novo[NameObject(chave)] = valor
-    novo.set_data(dados.encode("latin-1"))
+
+    novo[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({k: v for k, v in fontes.items()})
+    })
+    novo.set_data((prefixo + corpo).encode("latin-1"))
 
     anot["/AP"][NameObject("/N")] = writer._add_object(novo)
 
@@ -696,7 +744,11 @@ def textos_da_etiqueta(etiqueta):
     entrada = texto_formatado(etiqueta["controle_entrada"])
 
     return {
-        "nome": str(etiqueta["nome_dispositivo"]).strip().upper(),
+        "nome": (
+            str(etiqueta["nome_dispositivo"]).strip().upper()
+            if NOME_EM_MAIUSCULAS
+            else str(etiqueta["nome_dispositivo"]).strip()
+        ),
         "pix": texto_formatado(etiqueta["valor_pix"]),
         "pre_pago": texto_formatado(etiqueta["valor_pre_pago"]),
         "seguro_valor": texto_formatado(etiqueta["valor_seguro"]),
@@ -709,6 +761,26 @@ def textos_da_etiqueta(etiqueta):
         "seguro_nome": SEGURO_NOME,
         "seguro_meses": SEGURO_MESES,
     }
+
+
+def definir_capacidade(arquivo_modelo):
+    """Descobre quantas etiquetas cabem por página no PDF modelo."""
+    global ETIQUETAS_POR_PAGINA
+
+    reader = PdfReader(arquivo_modelo)
+    ancoras = [
+        w for w in _widgets_da_pagina(reader.pages[0])
+        if w["nome"].upper().startswith("TL")
+    ]
+
+    if not ancoras:
+        raise ValueError(
+            "Este PDF não parece ser o modelo de etiquetas: "
+            "nenhuma etiqueta foi encontrada."
+        )
+
+    ETIQUETAS_POR_PAGINA = len(ancoras)
+    return ETIQUETAS_POR_PAGINA
 
 
 # ============================================================
@@ -762,6 +834,8 @@ def gerar_pagina_preenchida(arquivo_modelo, etiquetas_da_pagina):
 def gerar_pdf_completo(arquivo_modelo, arquivo_saida, etiquetas):
     if not etiquetas:
         raise ValueError("Nenhuma etiqueta foi adicionada.")
+
+    definir_capacidade(arquivo_modelo)
 
     quantidade = len(etiquetas)
     quantidade_paginas = math.ceil(quantidade / ETIQUETAS_POR_PAGINA)
@@ -1006,6 +1080,13 @@ class Aplicacao:
         self.var_excel.set(self.config.get("arquivo_excel", ""))
         self.var_pdf.set(self.config.get("arquivo_pdf_modelo", ""))
 
+        try:
+            caminho = self.config.get("arquivo_pdf_modelo", "")
+            if caminho and Path(caminho).exists():
+                definir_capacidade(caminho)
+        except Exception:
+            pass
+
     def salvar_config_atual(self):
         try:
             taxa = float(self.var_taxa.get().replace(",", "."))
@@ -1043,6 +1124,12 @@ class Aplicacao:
         if caminho:
             self.var_pdf.set(caminho)
             self.salvar_config_atual()
+
+            try:
+                definir_capacidade(caminho)
+                self.atualizar_lista_etiquetas()
+            except Exception as erro:
+                messagebox.showerror("PDF modelo", str(erro))
 
     # --------------------------------------------------------
     # EXCEL
@@ -1237,6 +1324,8 @@ class Aplicacao:
         if not Path(arquivo_modelo).exists():
             raise FileNotFoundError(
                 "O arquivo PDF modelo não foi encontrado.")
+
+        definir_capacidade(arquivo_modelo)
 
         if not self.etiquetas:
             raise ValueError("Nenhuma etiqueta foi adicionada.")
