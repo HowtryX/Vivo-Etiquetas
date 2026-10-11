@@ -14,22 +14,17 @@ import tkinter as tk
 from tkinter import ttk, filedialog, messagebox
 
 from pypdf import PdfReader, PdfWriter
-from pypdf.generic import NumberObject, NameObject, TextStringObject
+from pypdf.generic import (
+    ArrayObject,
+    DecodedStreamObject,
+    DictionaryObject,
+    NameObject,
+)
 
 try:
     from openpyxl import load_workbook
 except ImportError:
     load_workbook = None
-
-try:
-    import fitz  # PyMuPDF  (pip install pymupdf)
-except ImportError:
-    fitz = None
-
-try:
-    from reportlab.pdfbase.pdfmetrics import stringWidth  # pip install reportlab
-except ImportError:
-    stringWidth = None
 
 
 # ============================================================
@@ -55,7 +50,7 @@ CONFIG_FILE = APP_DIR / "config.json"
 
 CONFIG_PADRAO = {
     "taxa_cartao_mes": 1.00,
-    "plano_vivo": "Controle 12GB",
+    "plano_vivo": "Vivo Controle 12GB",
     "valor_plano_vivo": 57.00,
     "arquivo_excel": "",
     "arquivo_pdf_modelo": "",
@@ -67,19 +62,16 @@ COL_NOME = "E"
 COL_PRE_PAGO = "F"
 COL_ENTRADA = "AX"
 
-# PDF
-ETIQUETAS_POR_PAGINA = 10
+# PDF (modelo: 2 colunas x 4 linhas = 8 etiquetas por página)
+ETIQUETAS_POR_PAGINA = 8
 CAMPOS_POR_ETIQUETA = 13
-TOTAL_CAMPOS_POR_PAGINA = ETIQUETAS_POR_PAGINA * CAMPOS_POR_ETIQUETA
 
-PDF_FLAG_MULTILINE = 4096  # bit 13
+# Textos fixos escritos em toda etiqueta
+SEGURO_NOME = "Vivo Seguro Celular"
+SEGURO_MESES = "12"
 
-# ------------------------------------------------------------
-# AJUSTES DO CAMPO "NOME DO APARELHO" (campo 6)
-# ------------------------------------------------------------
-FONTE_NOME_METRICA = "Helvetica"   # fonte usada só para MEDIR a largura do texto
-TAMANHO_NOME = 8                   # tamanho da letra do nome (ajuste se precisar)
-MARGEM_CAMPO = 4                   # margem interna (pontos) descontada da largura
+# Tamanho mínimo da letra quando o texto precisa "encolher" para caber
+TAMANHO_MINIMO = 5.0
 
 
 # ============================================================
@@ -291,222 +283,476 @@ class ExcelRepository:
 
 
 # ============================================================
-# MAPA DOS CAMPOS DA ETIQUETA
+# LEITURA DA ESTRUTURA DO PDF MODELO
 # ============================================================
+#
+# Cada etiqueta tem 13 campos. Em vez de depender da ORDEM dos campos
+# no arquivo (que muda), descobrimos qual campo é qual pela POSIÇÃO
+# dele na página:
+#
+#   - o campo "TL ..." (texto pequeno de rodapé) é a âncora da etiqueta
+#     e NUNCA é alterado;
+#   - os demais campos são ligados à etiqueta mais próxima;
+#   - o papel de cada campo vem do nome ou da posição dentro da etiqueta.
 
-def preencher_campos_etiqueta(grupo, valores):
-    # O campo 5 (grupo[4]) NÃO é alterado.
-    return {
-        grupo[0]: valores["pre_pago"],
-        grupo[1]: "Vivo Seguro Celular",
-        grupo[2]: valores["seguro"],
-        grupo[3]: "10x",
-        grupo[5]: valores["nome"],
-        grupo[6]: valores["plano"],
-        grupo[7]: valores["valor_plano"],
-        grupo[8]: valores["entrada"],
-        grupo[9]: valores["entrada"],
-        grupo[10]: valores["parcela_12"],
-        grupo[11]: valores["parcela_21"],
-        grupo[12]: valores["pix"],
-    }
+def _nome_campo(anot):
+    nome = anot.get("/T")
+    if nome is None and anot.get("/Parent") is not None:
+        nome = anot["/Parent"].get_object().get("/T")
+    return str(nome) if nome is not None else ""
 
 
-# ============================================================
-# UTILITÁRIOS DE WIDGET / CAMPO
-# ============================================================
-
-def _nome_widget(anotacao):
-    nome = anotacao.get("/T")
-    if nome is None and anotacao.get("/Parent") is not None:
-        nome = anotacao["/Parent"].get_object().get("/T")
-    return nome
+def _valor_campo(anot):
+    valor = anot.get("/V")
+    if valor is None and anot.get("/Parent") is not None:
+        valor = anot["/Parent"].get_object().get("/V")
+    return str(valor) if valor is not None else ""
 
 
-def _widgets_por_nome(pagina, nome_campo):
-    """Gera (widget, pai_ou_None) de todos os widgets com esse nome."""
+def _widgets_da_pagina(pagina):
+    widgets = []
+
     for ref in pagina.get("/Annots", []) or []:
-        try:
-            anot = ref.get_object()
-            if anot.get("/Subtype") != "/Widget":
-                continue
-            if _nome_widget(anot) != nome_campo:
-                continue
-            pai = anot.get("/Parent")
-            yield anot, (pai.get_object() if pai is not None else None)
-        except Exception:
+        anot = ref.get_object()
+
+        if anot.get("/Subtype") != "/Widget":
             continue
 
+        r = [float(v) for v in anot["/Rect"]]
+        x0, x1 = sorted((r[0], r[2]))
+        y0, y1 = sorted((r[1], r[3]))
 
-def configurar_multiline(pagina, writer, nome_campo):
-    """Liga o flag Multiline somente no campo informado."""
-    for anot, pai in _widgets_por_nome(pagina, nome_campo):
-        alvo = anot if anot.get("/Ff") is not None or pai is None else pai
-        flags = int(alvo.get("/Ff", 0) or 0) | PDF_FLAG_MULTILINE
-        alvo[NameObject("/Ff")] = NumberObject(flags)
+        widgets.append({
+            "anot": anot,
+            "nome": _nome_campo(anot),
+            "x0": x0, "y0": y0, "x1": x1, "y1": y1,
+        })
 
-
-def obter_largura_campo(pagina, nome_campo):
-    for anot, _ in _widgets_por_nome(pagina, nome_campo):
-        x0, y0, x1, y1 = [float(v) for v in anot["/Rect"]]
-        return abs(x1 - x0) - MARGEM_CAMPO
-    return None
+    return widgets
 
 
-def fixar_fonte_campo(pagina, nome_campo, tamanho=TAMANHO_NOME):
+def mapear_etiquetas(pagina):
     """
-    Troca SOMENTE o tamanho da fonte no /DA, mantendo o nome da fonte
-    original do campo. Evita que o visualizador use tamanho 'auto'.
+    Retorna uma lista com 8 dicionários (esquerda→direita, cima→baixo),
+    cada um com os 13 campos da etiqueta separados por papel.
     """
-    for anot, pai in _widgets_por_nome(pagina, nome_campo):
-        for obj in (anot, pai):
-            if obj is None:
-                continue
+    widgets = _widgets_da_pagina(pagina)
 
-            da = obj.get("/DA")
-            da = str(da) if da is not None else ""
+    ancoras = [w for w in widgets if w["nome"].upper().startswith("TL")]
 
-            if re.search(r"/\S+\s+[\d.]+\s+Tf", da):
-                novo = re.sub(
-                    r"(/\S+)\s+[\d.]+\s+Tf",
-                    rf"\1 {tamanho} Tf",
-                    da,
-                    count=1,
-                )
-            else:
-                novo = f"/Helv {tamanho} Tf 0 g"
+    if len(ancoras) != ETIQUETAS_POR_PAGINA:
+        raise ValueError(
+            "O PDF modelo não tem a estrutura esperada.\n\n"
+            f"Etiquetas encontradas na página 1: {len(ancoras)}\n"
+            f"Esperadas: {ETIQUETAS_POR_PAGINA}"
+        )
 
-            obj[NameObject("/DA")] = TextStringObject(novo)
+    ancoras.sort(key=lambda a: (-round(a["y0"]), a["x0"]))
+
+    grupos = [[] for _ in ancoras]
+
+    for w in widgets:
+        colunas = [a for a in ancoras if a["x0"] <= w["x0"] + 5]
+        if not colunas:
+            continue
+
+        x_coluna = max(a["x0"] for a in colunas)
+        candidatas = [
+            (i, a) for i, a in enumerate(ancoras)
+            if abs(a["x0"] - x_coluna) < 1 and a["y0"] <= w["y0"] + 1
+        ]
+        if not candidatas:
+            continue
+
+        indice, _ = max(candidatas, key=lambda ia: ia[1]["y0"])
+        grupos[indice].append(w)
+
+    etiquetas = []
+
+    for ancora, grupo in zip(ancoras, grupos):
+
+        if len(grupo) != CAMPOS_POR_ETIQUETA:
+            raise ValueError(
+                "O PDF modelo não possui a quantidade esperada "
+                "de campos por etiqueta.\n\n"
+                f"Encontrados: {len(grupo)}\n"
+                f"Esperados: {CAMPOS_POR_ETIQUETA}"
+            )
+
+        papeis = {}
+        precos = []
+
+        for w in grupo:
+            n = w["nome"].upper()
+
+            if n.startswith("TL"):
+                papeis["tl"] = w
+            elif n.startswith("ESCOLHA DO PLANO"):
+                papeis["plano"] = w
+            elif n.startswith("COMBO BOX"):
+                papeis["seguro_nome"] = w
+            elif n.startswith("TEXT FIELD"):
+                papeis["pix"] = w
+            elif n.startswith("12X"):
+                papeis["seguro_meses"] = w
+            elif n.startswith("NOME DO APARELHO"):
+                papeis["nome"] = w
+            elif n.startswith("PRE"):
+                precos.append(w)
+
+        esquerda = sorted(
+            [w for w in precos if w["x0"] - ancora["x0"] < 50],
+            key=lambda w: w["y0"])
+        meio = sorted(
+            [w for w in precos if 50 <= w["x0"] - ancora["x0"] < 120],
+            key=lambda w: w["y0"])
+        direita = sorted(
+            [w for w in precos if w["x0"] - ancora["x0"] >= 120],
+            key=lambda w: w["y0"])
+
+        if (len(esquerda), len(meio), len(direita)) != (2, 2, 3) or len(papeis) != 6:
+            raise ValueError(
+                "Não consegui identificar os campos de uma das etiquetas "
+                "do PDF modelo."
+            )
+
+        papeis["seguro_valor"], papeis["pre_pago"] = esquerda
+        papeis["entrada_1"], papeis["entrada_2"] = meio
+        papeis["plano_valor"], papeis["parcela_21"], papeis["parcela_12"] = direita
+
+        etiquetas.append(papeis)
+
+    return etiquetas
 
 
-def quebrar_texto(texto, largura, tamanho=TAMANHO_NOME):
-    """Quebra o texto em linhas que caibam na largura do campo."""
-    texto = str(texto).strip()
+# ============================================================
+# TEXTO DENTRO DO CAMPO (aparência)
+# ============================================================
+#
+# Em vez de pedir para o visualizador "regerar" o campo (o que faz o
+# Windows aumentar a letra), trocamos apenas o TEXTO dentro da aparência
+# que o próprio PDF já tem. Posição, fonte, cor e fundo ficam idênticos.
 
-    if stringWidth is None or not largura:
-        return texto
+_RE_TF = re.compile(r"/(\S+)\s+([\d.]+)\s+Tf")
+_RE_TD = re.compile(r"([-\d.]+)\s+([-\d.]+)\s+Td")
+_RE_ET = re.compile(r"\bET\b")
 
-    linhas, atual = [], ""
 
-    for palavra in texto.split():
+def _num(valor):
+    if hasattr(valor, "get_object"):
+        valor = valor.get_object()
+    return float(valor)
+
+
+def _codificar(texto):
+    # As fontes Vivo do modelo usam codificação MacRoman
+    return str(texto).encode("mac_roman", errors="replace")
+
+
+def _literal_pdf(dados):
+    dados = dados.replace(b"\\", b"\\\\").replace(b"(", b"\\(").replace(b")", b"\\)")
+    return dados.decode("latin-1")
+
+
+def _fontes_do_formulario(writer):
+    try:
+        dr = writer._root_object["/AcroForm"]["/DR"].get_object()
+        return dr["/Font"].get_object()
+    except Exception:
+        return {}
+
+
+def _largura_texto(fonte, dados, tamanho):
+    primeiro = int(fonte.get("/FirstChar", 0))
+    larguras = fonte.get("/Widths")
+    total = 0.0
+
+    for byte in dados:
+        i = byte - primeiro
+        if larguras is not None and 0 <= i < len(larguras):
+            total += _num(larguras[i])
+        else:
+            total += 500.0
+
+    return total * tamanho / 1000.0
+
+
+def _quebrar_linhas(texto, fonte, tamanho, largura):
+    linhas = []
+    atual = ""
+
+    for palavra in str(texto).split():
         teste = f"{atual} {palavra}".strip()
-        if stringWidth(teste, FONTE_NOME_METRICA, tamanho) <= largura:
+
+        if _largura_texto(fonte, _codificar(teste), tamanho) <= largura or not atual:
             atual = teste
         else:
-            if atual:
-                linhas.append(atual)
+            linhas.append(atual)
             atual = palavra
 
     if atual:
         linhas.append(atual)
 
-    return "\n".join(linhas)
+    return linhas
+
+
+def definir_texto_campo(writer, widget, texto, multilinha=False):
+    """Troca o texto de um campo mantendo o visual original."""
+    anot = widget["anot"]
+    ap = anot["/AP"]["/N"].get_object()
+
+    dados = ap.get_data().decode("latin-1")
+
+    m_tf = _RE_TF.search(dados)
+    m_td = _RE_TD.search(dados, m_tf.end()) if m_tf else None
+
+    if not m_tf or not m_td:
+        return
+
+    m_et = _RE_ET.search(dados, m_td.start())
+    if not m_et:
+        return
+
+    fonte_nome = m_tf.group(1)
+    tamanho = float(m_tf.group(2))
+    x_inicial, y_inicial = m_td.group(1), m_td.group(2)
+
+    bbox = [float(v) for v in ap["/BBox"]]
+    largura = (bbox[2] - bbox[0]) - 4
+    altura = (bbox[3] - bbox[1]) - 4
+
+    fonte = _fontes_do_formulario(writer).get("/" + fonte_nome)
+    texto = str(texto)
+
+    # ----- escolhe tamanho/linhas -----
+    if multilinha:
+        linhas = _quebrar_linhas(texto, fonte, tamanho, largura) if fonte else [texto]
+
+        while (
+            fonte
+            and tamanho > TAMANHO_MINIMO
+            and (len(linhas) * tamanho > altura
+                 or any(_largura_texto(fonte, _codificar(l), tamanho) > largura
+                        for l in linhas))
+        ):
+            tamanho -= 0.25
+            linhas = _quebrar_linhas(texto, fonte, tamanho, largura)
+    else:
+        linhas = [texto]
+
+        while (
+            fonte
+            and tamanho > TAMANHO_MINIMO
+            and _largura_texto(fonte, _codificar(texto), tamanho) > largura
+        ):
+            tamanho -= 0.25
+
+    # ----- monta o novo bloco de texto -----
+    partes = []
+    for i, linha in enumerate(linhas or [""]):
+        literal = _literal_pdf(_codificar(linha))
+        if i == 0:
+            partes.append(f"{x_inicial} {y_inicial} Td\n({literal}) Tj\n")
+        else:
+            partes.append(f"0 -{tamanho:g} Td\n({literal}) Tj\n")
+
+    novo_tf = f"/{fonte_nome} {tamanho:g} Tf"
+
+    dados = (
+        dados[:m_tf.start()]
+        + novo_tf
+        + dados[m_tf.end():m_td.start()]
+        + "".join(partes)
+        + dados[m_et.start():]
+    )
+
+    # Cria um novo stream de aparência (evita problemas com streams comprimidos)
+    novo = DecodedStreamObject()
+    for chave, valor in ap.items():
+        if chave not in ("/Length", "/Filter", "/DecodeParms"):
+            novo[NameObject(chave)] = valor
+    novo.set_data(dados.encode("latin-1"))
+
+    anot["/AP"][NameObject("/N")] = writer._add_object(novo)
 
 
 # ============================================================
-# ACHATAR (FLATTEN) PDF
+# ACHATAR A PÁGINA (campos viram conteúdo fixo)
 # ============================================================
 
-def achatar_pdf(origem, destino):
+def achatar_pagina(writer, pagina):
     """
-    Transforma os campos preenchíveis em conteúdo fixo, para o Windows
-    (Edge/Adobe/etc.) não recalcular a aparência e mudar o tamanho da letra.
-    Retorna True se achatou, False se não foi possível.
+    Desenha a aparência de cada campo diretamente na página e remove os
+    campos. Nenhum visualizador recalcula nada depois disso, então o
+    tamanho das letras fica exatamente como no PDF modelo.
     """
-    if fitz is None:
-        return False
+    fontes = _fontes_do_formulario(writer)
 
-    try:
-        doc = fitz.open(str(origem))
-        doc.bake(annots=True, widgets=True)
-        doc.save(str(destino))
-        doc.close()
-        return True
-    except Exception:
-        return False
+    resources = pagina.get("/Resources")
+    if resources is None:
+        resources = DictionaryObject()
+        pagina[NameObject("/Resources")] = resources
+    resources = resources.get_object()
+
+    xobjects = resources.get("/XObject")
+    if xobjects is None:
+        xobjects = DictionaryObject()
+        resources[NameObject("/XObject")] = xobjects
+    xobjects = xobjects.get_object()
+
+    desenho = []
+    restantes = ArrayObject()
+
+    for i, ref in enumerate(pagina.get("/Annots", []) or []):
+        anot = ref.get_object()
+
+        if anot.get("/Subtype") != "/Widget":
+            restantes.append(ref)
+            continue
+
+        # campo oculto → não desenha
+        if int(anot.get("/F", 0) or 0) & 2:
+            continue
+
+        ap = anot.get("/AP")
+        if ap is None or "/N" not in ap:
+            continue
+
+        n_ref = ap.raw_get("/N")
+        n = n_ref.get_object()
+
+        if not hasattr(n, "get_data"):
+            continue
+
+        # garante que o stream é um Form XObject com recursos próprios
+        n[NameObject("/Type")] = NameObject("/XObject")
+        n[NameObject("/Subtype")] = NameObject("/Form")
+        if "/Resources" not in n:
+            n[NameObject("/Resources")] = DictionaryObject({
+                NameObject("/Font"): DictionaryObject(
+                    {k: v for k, v in fontes.items()})
+            })
+
+        # matriz que leva o BBox da aparência até o retângulo do campo
+        r = [float(v) for v in anot["/Rect"]]
+        rx0, rx1 = sorted((r[0], r[2]))
+        ry0, ry1 = sorted((r[1], r[3]))
+
+        bbox = [float(v) for v in n["/BBox"]]
+        m = [float(v) for v in n.get("/Matrix", [1, 0, 0, 1, 0, 0])]
+
+        cantos = [
+            (bbox[0], bbox[1]), (bbox[2], bbox[1]),
+            (bbox[0], bbox[3]), (bbox[2], bbox[3]),
+        ]
+        xs = [m[0] * x + m[2] * y + m[4] for x, y in cantos]
+        ys = [m[1] * x + m[3] * y + m[5] for x, y in cantos]
+        tx0, tx1, ty0, ty1 = min(xs), max(xs), min(ys), max(ys)
+
+        if tx1 - tx0 <= 0 or ty1 - ty0 <= 0:
+            continue
+
+        sx = (rx1 - rx0) / (tx1 - tx0)
+        sy = (ry1 - ry0) / (ty1 - ty0)
+        ex = rx0 - tx0 * sx
+        fy = ry0 - ty0 * sy
+
+        nome = f"/FlatW{i}"
+        xobjects[NameObject(nome)] = n_ref
+        desenho.append(f"q {sx:.6f} 0 0 {sy:.6f} {ex:.6f} {fy:.6f} cm {nome} Do Q")
+
+    # junta o conteúdo original com os campos desenhados
+    original = pagina.get_contents()
+    base = original.get_data() if original is not None else b""
+
+    novo = DecodedStreamObject()
+    novo.set_data(
+        b"q\n" + base + b"\nQ\n" + "\n".join(desenho).encode("latin-1") + b"\n"
+    )
+    pagina[NameObject("/Contents")] = writer._add_object(novo)
+
+    if restantes:
+        pagina[NameObject("/Annots")] = restantes
+    elif "/Annots" in pagina:
+        del pagina["/Annots"]
 
 
 # ============================================================
-# GERA UMA PÁGINA PREENCHIDA
+# TEXTOS DE UMA ETIQUETA
+# ============================================================
+
+def textos_da_etiqueta(etiqueta):
+    """Dicionário papel → texto. Etiqueta None = posição vazia."""
+
+    papeis = [
+        "nome", "pix", "pre_pago", "seguro_valor",
+        "entrada_1", "entrada_2", "parcela_12", "parcela_21",
+        "plano", "plano_valor", "seguro_nome", "seguro_meses",
+    ]
+
+    if etiqueta is None:
+        return {papel: "" for papel in papeis}
+
+    entrada = texto_formatado(etiqueta["controle_entrada"])
+
+    return {
+        "nome": str(etiqueta["nome_dispositivo"]).strip().upper(),
+        "pix": texto_formatado(etiqueta["valor_pix"]),
+        "pre_pago": texto_formatado(etiqueta["valor_pre_pago"]),
+        "seguro_valor": texto_formatado(etiqueta["valor_seguro"]),
+        "entrada_1": entrada,
+        "entrada_2": entrada,
+        "parcela_12": texto_formatado(etiqueta["parcela_12x"]),
+        "parcela_21": texto_formatado(etiqueta["parcela_21x"]),
+        "plano": etiqueta["plano_vivo"],
+        "plano_valor": texto_formatado(etiqueta["valor_plano_vivo"]),
+        "seguro_nome": SEGURO_NOME,
+        "seguro_meses": SEGURO_MESES,
+    }
+
+
+# ============================================================
+# GERA UMA PÁGINA PREENCHIDA (já achatada)
 # ============================================================
 
 def gerar_pagina_preenchida(arquivo_modelo, etiquetas_da_pagina):
     reader = PdfReader(arquivo_modelo)
-    campos_dict = reader.get_fields()
 
-    if not campos_dict:
+    if not reader.get_fields():
         raise ValueError("O PDF modelo não possui campos preenchíveis.")
-
-    campos = list(campos_dict.keys())
-
-    if len(campos) != TOTAL_CAMPOS_POR_PAGINA:
-        raise ValueError(
-            "O PDF modelo não possui a quantidade esperada de campos.\n\n"
-            f"Encontrados: {len(campos)}\n"
-            f"Esperados: {TOTAL_CAMPOS_POR_PAGINA}"
-        )
 
     writer = PdfWriter()
     writer.clone_document_from_reader(reader)
     pagina = writer.pages[0]
 
-    todos_os_dados = {}
+    mapa = mapear_etiquetas(pagina)
 
-    for numero_etiqueta in range(ETIQUETAS_POR_PAGINA):
-        etiqueta = etiquetas_da_pagina[numero_etiqueta]
+    for numero, papeis in enumerate(mapa):
+        etiqueta = (
+            etiquetas_da_pagina[numero]
+            if numero < len(etiquetas_da_pagina)
+            else None
+        )
 
-        if etiqueta is None:
-            continue
+        textos = textos_da_etiqueta(etiqueta)
 
-        inicio = numero_etiqueta * CAMPOS_POR_ETIQUETA
-        grupo = campos[inicio:inicio + CAMPOS_POR_ETIQUETA]
+        for papel, texto in textos.items():
+            widget = papeis[papel]
 
-        valores = {
-            "nome": etiqueta["nome_dispositivo"],
-            "pre_pago": texto_formatado(etiqueta["valor_pre_pago"]),
-            "seguro": texto_formatado(etiqueta["valor_seguro"]),
-            "entrada": texto_formatado(etiqueta["controle_entrada"]),
-            "parcela_12": texto_formatado(etiqueta["parcela_12x"]),
-            "parcela_21": texto_formatado(etiqueta["parcela_21x"]),
-            "pix": texto_formatado(etiqueta["valor_pix"]),
-            "plano": etiqueta["plano_vivo"],
-            "valor_plano": texto_formatado(etiqueta["valor_plano_vivo"]),
-        }
+            # Campos fixos (plano, seguro, "12"): só mexe se o valor mudou
+            if papel in ("plano", "seguro_nome", "seguro_meses"):
+                if texto == _valor_campo(widget["anot"]):
+                    continue
 
-        dados = preencher_campos_etiqueta(grupo, valores)
+            definir_texto_campo(
+                writer, widget, texto, multilinha=(papel == "nome")
+            )
 
-        # --- Campo 6: nome do aparelho -----------------------------
-        campo_nome = grupo[5]
+        # O campo "TL" (texto pequeno) não é tocado.
 
-        configurar_multiline(pagina, writer, campo_nome)
-        fixar_fonte_campo(pagina, campo_nome)
+    achatar_pagina(writer, pagina)
 
-        largura = obter_largura_campo(pagina, campo_nome)
-        dados[campo_nome] = quebrar_texto(valores["nome"], largura)
-
-        todos_os_dados.update(dados)
-
-    writer.update_page_form_field_values(
-        pagina,
-        {k: ("" if v is None else str(v)) for k, v in todos_os_dados.items()},
-        auto_regenerate=False,
-    )
-
-    try:
-        writer.set_need_appearances_writer(False)
-    except Exception:
-        pass
-
-    tmp = tempfile.NamedTemporaryFile(
-        prefix="vivo_pagina_", suffix=".pdf", delete=False
-    )
-    caminho = Path(tmp.name)
-    tmp.close()
-
-    with open(caminho, "wb") as arquivo:
-        writer.write(arquivo)
-
-    return caminho
+    return writer, pagina
 
 
 # ============================================================
@@ -520,54 +766,24 @@ def gerar_pdf_completo(arquivo_modelo, arquivo_saida, etiquetas):
     quantidade = len(etiquetas)
     quantidade_paginas = math.ceil(quantidade / ETIQUETAS_POR_PAGINA)
 
-    temporarios = []
-    paginas_finais = []
+    writer_final = PdfWriter()
 
-    try:
-        for numero_pagina in range(quantidade_paginas):
-            inicio = numero_pagina * ETIQUETAS_POR_PAGINA
-            fim = min(inicio + ETIQUETAS_POR_PAGINA, quantidade)
+    for numero_pagina in range(quantidade_paginas):
+        inicio = numero_pagina * ETIQUETAS_POR_PAGINA
+        fim = min(inicio + ETIQUETAS_POR_PAGINA, quantidade)
 
-            etiquetas_da_pagina = list(etiquetas[inicio:fim])
-            while len(etiquetas_da_pagina) < ETIQUETAS_POR_PAGINA:
-                etiquetas_da_pagina.append(None)
+        etiquetas_da_pagina = list(etiquetas[inicio:fim])
+        while len(etiquetas_da_pagina) < ETIQUETAS_POR_PAGINA:
+            etiquetas_da_pagina.append(None)
 
-            caminho_pagina = gerar_pagina_preenchida(
-                arquivo_modelo, etiquetas_da_pagina
-            )
-            temporarios.append(caminho_pagina)
+        _writer, pagina = gerar_pagina_preenchida(
+            arquivo_modelo, etiquetas_da_pagina
+        )
 
-            # Achata cada página ANTES de juntar (o AcroForm ainda existe aqui)
-            caminho_achatado = caminho_pagina.with_name(
-                caminho_pagina.stem + "_flat.pdf"
-            )
-            if achatar_pdf(caminho_pagina, caminho_achatado):
-                temporarios.append(caminho_achatado)
-                paginas_finais.append(caminho_achatado)
-            else:
-                paginas_finais.append(caminho_pagina)
+        writer_final.add_page(pagina)
 
-        # ---- Junta as páginas ----
-        if fitz is not None:
-            saida = fitz.open()
-            for caminho in paginas_finais:
-                with fitz.open(str(caminho)) as parte:
-                    saida.insert_pdf(parte)
-            saida.save(str(arquivo_saida))
-            saida.close()
-        else:
-            writer_final = PdfWriter()
-            for caminho in paginas_finais:
-                writer_final.add_page(PdfReader(caminho).pages[0])
-            with open(arquivo_saida, "wb") as arquivo:
-                writer_final.write(arquivo)
-
-    finally:
-        for caminho in temporarios:
-            try:
-                Path(caminho).unlink(missing_ok=True)
-            except OSError:
-                pass
+    with open(arquivo_saida, "wb") as arquivo:
+        writer_final.write(arquivo)
 
 
 # ============================================================
