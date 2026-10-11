@@ -34,12 +34,19 @@ jobs:
             --clean `
             --onefile `
             --windowed `
+            --hidden-import encodings.mac_roman `
             --name "Gerador_Etiquetas_Vivo" `
             vivo_etiquetas.py
 
+      - name: Guardar EXE (para testes manuais)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Gerador_Etiquetas_Vivo
+          path: dist/Gerador_Etiquetas_Vivo.exe
+
       - name: Criar Release
+        if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/Gerador_Etiquetas_Vivo.exe
           generate_release_notes: true
-
