@@ -228,6 +228,8 @@ def calcular_etiqueta(aparelho, plano_vivo, valor_plano):
         "valor_pre_pago": aparelho.pre_pago,
         "valor_seguro": calcular_seguro(aparelho.controle_entrada),
         "controle_entrada": aparelho.controle_entrada,
+        "total_12x": aparelho.total_12x,
+        "total_21x": aparelho.total_21x,
         "parcela_12x": calcular_parcela_tabela(
             aparelho.total_12x, 12, aparelho.modelo
         ),
@@ -442,7 +444,9 @@ def mapear_etiquetas(pagina):
             )
 
         papeis["seguro_valor"], papeis["pre_pago"] = esquerda
-        papeis["entrada_1"], papeis["entrada_2"] = meio
+        # (ordenado de baixo p/ cima) linha de baixo = total em 21x,
+        # linha de cima = à vista
+        papeis["total_21x"], papeis["a_vista"] = meio
         papeis["plano_valor"], papeis["parcela_21"], papeis["parcela_12"] = direita
 
         etiquetas.append(papeis)
@@ -747,7 +751,7 @@ def textos_da_etiqueta(etiqueta):
 
     papeis = [
         "nome", "pix", "pre_pago", "seguro_valor",
-        "entrada_1", "entrada_2", "parcela_12", "parcela_21",
+        "a_vista", "total_21x", "parcela_12", "parcela_21",
         "plano", "plano_valor", "seguro_nome", "seguro_meses",
     ]
 
@@ -765,8 +769,10 @@ def textos_da_etiqueta(etiqueta):
         "pix": texto_formatado(etiqueta["valor_pix"]),
         "pre_pago": texto_formatado(etiqueta["valor_pre_pago"]),
         "seguro_valor": texto_formatado(etiqueta["valor_seguro"]),
-        "entrada_1": entrada,
-        "entrada_2": entrada,
+        # Linha de cima: À vista (ao lado do "em 12x de")
+        "a_vista": entrada,
+        # Linha de baixo: total do parcelamento em 21x (ao lado do "em até 21x de")
+        "total_21x": texto_formatado(etiqueta["total_21x"]),
         "parcela_12": texto_formatado(etiqueta["parcela_12x"]),
         "parcela_21": texto_formatado(etiqueta["parcela_21x"]),
         "plano": etiqueta["plano_vivo"],
@@ -1228,7 +1234,7 @@ class Aplicacao:
     def mostrar_resultado(self, resultado):
         janela = tk.Toplevel(self.root)
         janela.title("Resultado do cálculo")
-        janela.geometry("450x500")
+        janela.geometry("450x560")
 
         texto = tk.Text(janela, wrap="word")
         texto.pack(fill="both", expand=True, padx=10, pady=10)
@@ -1240,8 +1246,10 @@ class Aplicacao:
             f"CONTROLE ENTRADA\n{formatar_reais(resultado['controle_entrada'])}\n\n"
             f"SEGURO\n{formatar_reais(resultado['valor_seguro'])}\n\n"
             f"PIX\n{formatar_reais(resultado['valor_pix'])}\n\n"
-            f"12X DE\n{formatar_reais(resultado['parcela_12x'])}\n\n"
-            f"21X DE\n{formatar_reais(resultado['parcela_21x'])}\n\n"
+            f"12X DE\n{formatar_reais(resultado['parcela_12x'])}"
+            f"  (total {formatar_reais(resultado['total_12x'])})\n\n"
+            f"21X DE\n{formatar_reais(resultado['parcela_21x'])}"
+            f"  (total {formatar_reais(resultado['total_21x'])})\n\n"
             f"PLANO\n{resultado['plano_vivo']}\n"
             f"{formatar_reais(resultado['valor_plano_vivo'])}",
         )
