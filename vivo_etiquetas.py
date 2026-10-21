@@ -53,6 +53,7 @@ CONFIG_PADRAO = {
     "valor_plano_vivo": 57.00,
     "arquivo_excel": "",
     "arquivo_pdf_modelo": "",
+    "tema": "sistema",          # "sistema", "claro" ou "escuro"
 }
 
 # Excel
@@ -883,6 +884,74 @@ def gerar_pdf_completo(arquivo_modelo, arquivo_saida, etiquetas):
 # APLICAÇÃO
 # ============================================================
 
+# ============================================================
+# TEMAS (claro / escuro / padrão do dispositivo)
+# ============================================================
+
+TEMAS = {
+    "claro": {
+        "bg": "#f3f3f3", "fg": "#1a1a1a", "campo": "#ffffff",
+        "botao": "#e4e4e4", "botao_hover": "#d6d6d6", "borda": "#c4c4c4",
+        "selecao": "#0a64c8", "selecao_fg": "#ffffff",
+    },
+    "escuro": {
+        "bg": "#1f1f1f", "fg": "#e6e6e6", "campo": "#2b2b2b",
+        "botao": "#363636", "botao_hover": "#444444", "borda": "#4a4a4a",
+        "selecao": "#2f6fb5", "selecao_fg": "#ffffff",
+    },
+}
+
+OPCOES_TEMA = {
+    "Padrão do dispositivo": "sistema",
+    "Claro": "claro",
+    "Escuro": "escuro",
+}
+
+
+def tema_do_sistema():
+    """Descobre se o dispositivo está no modo claro ou escuro."""
+    try:
+        if sys.platform.startswith("win"):
+            import winreg
+            chave = winreg.OpenKey(
+                winreg.HKEY_CURRENT_USER,
+                r"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize",
+            )
+            claro, _ = winreg.QueryValueEx(chave, "AppsUseLightTheme")
+            return "claro" if claro else "escuro"
+
+        if sys.platform == "darwin":
+            r = subprocess.run(
+                ["defaults", "read", "-g", "AppleInterfaceStyle"],
+                capture_output=True, text=True,
+            )
+            return "escuro" if "Dark" in r.stdout else "claro"
+    except Exception:
+        pass
+
+    return "claro"
+
+
+def barra_de_titulo(janela, escuro):
+    """Windows 10/11: deixa a barra de título da janela escura ou clara."""
+    if not sys.platform.startswith("win"):
+        return
+
+    try:
+        import ctypes
+
+        janela.update_idletasks()
+        hwnd = ctypes.windll.user32.GetParent(janela.winfo_id())
+        valor = ctypes.c_int(1 if escuro else 0)
+
+        for atributo in (20, 19):   # 20 = Win10 2004+/Win11, 19 = anteriores
+            ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, atributo, ctypes.byref(valor), ctypes.sizeof(valor)
+            )
+    except Exception:
+        pass
+
+
 class Aplicacao:
 
     def __init__(self, root):
@@ -897,8 +966,14 @@ class Aplicacao:
         self.resultados = []
         self.indice_etiqueta_selecionada = 0
 
+        self.cores_tema = TEMAS["claro"]
+        self.tema_atual = "claro"
+
         self.criar_interface()
         self.carregar_caminhos_salvos()
+
+        self.aplicar_tema()
+        self.root.after(3000, self.vigiar_tema_do_sistema)
 
     # --------------------------------------------------------
     # INTERFACE
@@ -932,6 +1007,24 @@ class Aplicacao:
 
     def montar_conteudo(self):
         frame = self.frame_conteudo
+
+        # ---------------- TEMA ----------------
+        barra_tema = ttk.Frame(frame)
+        barra_tema.pack(fill="x", padx=15, pady=(10, 0))
+
+        salvo = self.config.get("tema", "sistema")
+        self.var_tema = tk.StringVar(value=next(
+            (nome for nome, valor in OPCOES_TEMA.items() if valor == salvo),
+            "Padrão do dispositivo",
+        ))
+
+        self.combo_tema = ttk.Combobox(
+            barra_tema, textvariable=self.var_tema,
+            values=list(OPCOES_TEMA), state="readonly", width=22,
+        )
+        self.combo_tema.pack(side="right")
+        self.combo_tema.bind("<<ComboboxSelected>>", self.mudar_tema)
+        ttk.Label(barra_tema, text="Tema:").pack(side="right", padx=(0, 6))
 
         ttk.Label(
             frame, text="Gerador de Etiquetas Vivo",
@@ -1069,6 +1162,100 @@ class Aplicacao:
         ttk.Button(frame_pdf, text="💾 Gerar PDF",
                    command=self.salvar_pdf).pack(
             side="left", padx=8, ipadx=12, ipady=7)
+
+    # --------------------------------------------------------
+    # TEMA
+    # --------------------------------------------------------
+
+    def aplicar_tema(self):
+        escolha = self.config.get("tema", "sistema")
+        nome = tema_do_sistema() if escolha == "sistema" else escolha
+        if nome not in TEMAS:
+            nome = "claro"
+
+        c = TEMAS[nome]
+        self.cores_tema = c
+        self.tema_atual = nome
+
+        estilo = ttk.Style(self.root)
+        estilo.theme_use("clam")
+
+        self.root.configure(bg=c["bg"])
+
+        estilo.configure(
+            ".", background=c["bg"], foreground=c["fg"],
+            fieldbackground=c["campo"], bordercolor=c["borda"],
+            lightcolor=c["bg"], darkcolor=c["bg"], troughcolor=c["bg"],
+            insertcolor=c["fg"], focuscolor=c["bg"],
+        )
+        estilo.configure("TLabelframe", bordercolor=c["borda"])
+        estilo.configure("TLabelframe.Label",
+                         background=c["bg"], foreground=c["fg"])
+
+        estilo.configure("TButton", background=c["botao"],
+                         lightcolor=c["botao"], darkcolor=c["botao"],
+                         bordercolor=c["borda"], focuscolor=c["botao"])
+        estilo.map("TButton", background=[
+            ("active", c["botao_hover"]), ("pressed", c["botao_hover"])])
+
+        estilo.configure("TEntry", fieldbackground=c["campo"],
+                         foreground=c["fg"], insertcolor=c["fg"])
+        estilo.map("TEntry",
+                   fieldbackground=[("readonly", c["botao"])],
+                   foreground=[("readonly", c["fg"])])
+
+        estilo.configure("TCombobox", fieldbackground=c["campo"],
+                         background=c["botao"], foreground=c["fg"],
+                         arrowcolor=c["fg"])
+        estilo.map("TCombobox",
+                   fieldbackground=[("readonly", c["campo"])],
+                   foreground=[("readonly", c["fg"])],
+                   selectbackground=[("readonly", c["campo"])],
+                   selectforeground=[("readonly", c["fg"])])
+
+        estilo.configure("Vertical.TScrollbar", background=c["botao"],
+                         lightcolor=c["botao"], darkcolor=c["botao"],
+                         troughcolor=c["bg"], bordercolor=c["borda"],
+                         arrowcolor=c["fg"])
+
+        # Widgets "clássicos" do Tk (não seguem o estilo ttk)
+        self.canvas.configure(bg=c["bg"])
+
+        for lista in (self.lista_modelos, self.lista_etiquetas):
+            lista.configure(
+                bg=c["campo"], fg=c["fg"],
+                selectbackground=c["selecao"], selectforeground=c["selecao_fg"],
+                highlightbackground=c["borda"], highlightcolor=c["borda"],
+            )
+
+        # Lista que se abre no seletor de tema
+        try:
+            popdown = self.root.tk.eval(
+                f"ttk::combobox::PopdownWindow {self.combo_tema}")
+            self.root.tk.call(
+                f"{popdown}.f.l", "configure",
+                "-background", c["campo"], "-foreground", c["fg"],
+                "-selectbackground", c["selecao"],
+                "-selectforeground", c["selecao_fg"],
+            )
+        except Exception:
+            pass
+
+        barra_de_titulo(self.root, nome == "escuro")
+
+    def mudar_tema(self, event=None):
+        self.config["tema"] = OPCOES_TEMA.get(self.var_tema.get(), "sistema")
+        salvar_config(self.config)
+        self.aplicar_tema()
+        self.combo_tema.selection_clear()
+
+    def vigiar_tema_do_sistema(self):
+        """No modo 'Padrão do dispositivo', acompanha mudanças do Windows."""
+        if (self.config.get("tema", "sistema") == "sistema"
+                and tema_do_sistema() != self.tema_atual):
+            self.aplicar_tema()
+
+        self.root.after(3000, self.vigiar_tema_do_sistema)
 
     # --------------------------------------------------------
     # SCROLL
@@ -1236,7 +1423,15 @@ class Aplicacao:
         janela.title("Resultado do cálculo")
         janela.geometry("450x560")
 
-        texto = tk.Text(janela, wrap="word")
+        c = self.cores_tema
+        janela.configure(bg=c["bg"])
+        barra_de_titulo(janela, self.tema_atual == "escuro")
+
+        texto = tk.Text(
+            janela, wrap="word", bg=c["campo"], fg=c["fg"],
+            insertbackground=c["fg"], relief="flat", highlightthickness=1,
+            highlightbackground=c["borda"], highlightcolor=c["borda"],
+        )
         texto.pack(fill="both", expand=True, padx=10, pady=10)
 
         texto.insert(
