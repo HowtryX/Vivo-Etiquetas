@@ -49,7 +49,6 @@ APP_DIR = Path.home() / ".vivo_etiquetas"
 CONFIG_FILE = APP_DIR / "config.json"
 
 CONFIG_PADRAO = {
-    "taxa_cartao_mes": 1.00,
     "plano_vivo": "Vivo Controle 12GB",
     "valor_plano_vivo": 57.00,
     "arquivo_excel": "",
@@ -61,6 +60,11 @@ ABA_EXCEL = "SMARTPHONES"
 COL_NOME = "E"
 COL_PRE_PAGO = "F"
 COL_ENTRADA = "AX"
+
+# No bloco "CONTROLE ENTRADA" da tabela, cada coluna de parcelamento traz o
+# VALOR TOTAL a pagar naquele parcelamento (a parcela = total / nº de parcelas).
+COL_TOTAL_12X = "BJ"
+COL_TOTAL_21X = "BS"
 
 # PDF
 # O número de etiquetas por página é descoberto no próprio PDF modelo
@@ -102,6 +106,7 @@ def carregar_config():
             dados = json.load(arquivo)
         config = CONFIG_PADRAO.copy()
         config.update(dados)
+        config.pop("taxa_cartao_mes", None)   # campo antigo (não é mais usado)
         return config
     except (OSError, json.JSONDecodeError):
         return CONFIG_PADRAO.copy()
@@ -176,22 +181,25 @@ def calcular_pix(controle_entrada):
 
 
 # ============================================================
-# PARCELAMENTO PRICE
+# PARCELAMENTO (valores vêm da tabela de preços)
 # ============================================================
 
-def calcular_parcela_price(valor, quantidade_parcelas, taxa_mensal):
-    valor = moeda(valor)
-    taxa = Decimal(str(taxa_mensal)) / Decimal("100")
+def calcular_parcela_tabela(total, quantidade_parcelas, nome_aparelho=""):
+    """
+    A tabela informa o TOTAL a pagar no parcelamento (já com os juros,
+    quando houver). O valor de cada parcela é esse total dividido pelo
+    número de parcelas.
+    """
+    total = moeda(total)
 
-    if quantidade_parcelas <= 0:
-        raise ValueError("Quantidade de parcelas inválida.")
+    if total <= 0:
+        raise ValueError(
+            f"A tabela não tem o valor do parcelamento em "
+            f"{quantidade_parcelas}x para este aparelho"
+            + (f" ({nome_aparelho})." if nome_aparelho else ".")
+        )
 
-    if taxa == 0:
-        return moeda(valor / quantidade_parcelas)
-
-    fator = (Decimal("1") + taxa) ** quantidade_parcelas
-    parcela = valor * (taxa * fator) / (fator - Decimal("1"))
-    return moeda(parcela)
+    return moeda(total / quantidade_parcelas)
 
 
 # ============================================================
@@ -200,28 +208,31 @@ def calcular_parcela_price(valor, quantidade_parcelas, taxa_mensal):
 
 class Aparelho:
 
-    def __init__(self, modelo, pre_pago, controle_entrada):
+    def __init__(self, modelo, pre_pago, controle_entrada,
+                 total_12x=0, total_21x=0):
         self.modelo = modelo
         self.pre_pago = moeda(pre_pago)
         self.controle_entrada = moeda(controle_entrada)
+        self.total_12x = moeda(total_12x)
+        self.total_21x = moeda(total_21x)
 
 
 # ============================================================
 # CÁLCULO COMPLETO DA ETIQUETA
 # ============================================================
 
-def calcular_etiqueta(aparelho, taxa_cartao, plano_vivo, valor_plano):
+def calcular_etiqueta(aparelho, plano_vivo, valor_plano):
     return {
         "nome_dispositivo": aparelho.modelo,
         "valor_pix": calcular_pix(aparelho.controle_entrada),
         "valor_pre_pago": aparelho.pre_pago,
         "valor_seguro": calcular_seguro(aparelho.controle_entrada),
         "controle_entrada": aparelho.controle_entrada,
-        "parcela_12x": calcular_parcela_price(
-            aparelho.controle_entrada, 12, taxa_cartao
+        "parcela_12x": calcular_parcela_tabela(
+            aparelho.total_12x, 12, aparelho.modelo
         ),
-        "parcela_21x": calcular_parcela_price(
-            aparelho.controle_entrada, 21, taxa_cartao
+        "parcela_21x": calcular_parcela_tabela(
+            aparelho.total_21x, 21, aparelho.modelo
         ),
         "plano_vivo": plano_vivo,
         "valor_plano_vivo": moeda(valor_plano),
@@ -272,6 +283,8 @@ class ExcelRepository:
                 "Nome Comercial": nome,
                 "Pré-pago": planilha[f"{COL_PRE_PAGO}{numero_linha}"].value,
                 "Controle Entrada": planilha[f"{COL_ENTRADA}{numero_linha}"].value,
+                "Total 12x": planilha[f"{COL_TOTAL_12X}{numero_linha}"].value,
+                "Total 21x": planilha[f"{COL_TOTAL_21X}{numero_linha}"].value,
                 "linha_excel": numero_linha,
             })
 
@@ -950,24 +963,18 @@ class Aplicacao:
         frame_config = ttk.LabelFrame(frame, text="Configurações")
         frame_config.pack(fill="x", padx=15, pady=5)
 
-        ttk.Label(frame_config, text="Taxa cartão (% a.m.):").grid(
+        ttk.Label(frame_config, text="Plano:").grid(
             row=0, column=0, padx=8, pady=8)
-        self.var_taxa = tk.StringVar(
-            value=str(self.config["taxa_cartao_mes"]))
-        ttk.Entry(frame_config, textvariable=self.var_taxa, width=10).grid(
-            row=0, column=1, padx=5)
-
-        ttk.Label(frame_config, text="Plano:").grid(row=0, column=2, padx=8)
         self.var_plano = tk.StringVar(value=self.config["plano_vivo"])
         ttk.Entry(frame_config, textvariable=self.var_plano, width=25).grid(
-            row=0, column=3, padx=5)
+            row=0, column=1, padx=5)
 
         ttk.Label(frame_config, text="Valor plano:").grid(
-            row=0, column=4, padx=8)
+            row=0, column=2, padx=8)
         self.var_valor_plano = tk.StringVar(
             value=str(self.config["valor_plano_vivo"]))
         ttk.Entry(frame_config, textvariable=self.var_valor_plano,
-                  width=10).grid(row=0, column=5, padx=5)
+                  width=10).grid(row=0, column=3, padx=5)
 
         # ---------------- PESQUISA ----------------
         frame_pesquisa = ttk.LabelFrame(frame, text="Pesquisar aparelho")
@@ -1002,11 +1009,15 @@ class Aplicacao:
         self.var_nome = tk.StringVar()
         self.var_pre_pago = tk.StringVar()
         self.var_entrada = tk.StringVar()
+        self.var_total_12x = tk.StringVar()
+        self.var_total_21x = tk.StringVar()
 
         campos = [
             ("Nome:", self.var_nome),
             ("Pré-pago:", self.var_pre_pago),
             ("Controle Entrada:", self.var_entrada),
+            ("Total em 12x:", self.var_total_12x),
+            ("Total em 21x:", self.var_total_21x),
         ]
 
         for linha, (nome, variavel) in enumerate(campos):
@@ -1018,7 +1029,7 @@ class Aplicacao:
 
         ttk.Button(frame_dados, text="Calcular aparelho",
                    command=self.calcular_atual).grid(
-            row=3, column=0, columnspan=2, pady=12)
+            row=len(campos), column=0, columnspan=2, pady=12)
 
         # ---------------- ETIQUETAS ----------------
         frame_etiquetas = ttk.LabelFrame(frame, text="Etiquetas adicionadas")
@@ -1089,12 +1100,10 @@ class Aplicacao:
 
     def salvar_config_atual(self):
         try:
-            taxa = float(self.var_taxa.get().replace(",", "."))
             valor_plano = float(self.var_valor_plano.get().replace(",", "."))
         except ValueError:
-            raise ValueError("Taxa do cartão ou valor do plano inválido.")
+            raise ValueError("Valor do plano inválido.")
 
-        self.config["taxa_cartao_mes"] = taxa
         self.config["plano_vivo"] = self.var_plano.get()
         self.config["valor_plano_vivo"] = valor_plano
         self.config["arquivo_excel"] = self.var_excel.get()
@@ -1177,6 +1186,10 @@ class Aplicacao:
             decimal_brasileiro(linha.get("Pré-pago", 0))))
         self.var_entrada.set(texto_formatado(
             decimal_brasileiro(linha.get("Controle Entrada", 0))))
+        self.var_total_12x.set(texto_formatado(
+            decimal_brasileiro(linha.get("Total 12x", 0))))
+        self.var_total_21x.set(texto_formatado(
+            decimal_brasileiro(linha.get("Total 21x", 0))))
 
     # --------------------------------------------------------
     # CÁLCULO
@@ -1187,6 +1200,8 @@ class Aplicacao:
             self.var_nome.get(),
             decimal_brasileiro(self.var_pre_pago.get()),
             decimal_brasileiro(self.var_entrada.get()),
+            decimal_brasileiro(self.var_total_12x.get()),
+            decimal_brasileiro(self.var_total_21x.get()),
         )
 
     def calcular_atual(self):
@@ -1197,11 +1212,10 @@ class Aplicacao:
 
         try:
             aparelho = self.obter_aparelho_atual()
-            taxa = Decimal(self.var_taxa.get().replace(",", "."))
             valor_plano = decimal_brasileiro(self.var_valor_plano.get())
 
             resultado = calcular_etiqueta(
-                aparelho, taxa, self.var_plano.get(), valor_plano
+                aparelho, self.var_plano.get(), valor_plano
             )
 
             self.mostrar_resultado(resultado)
@@ -1226,8 +1240,8 @@ class Aplicacao:
             f"CONTROLE ENTRADA\n{formatar_reais(resultado['controle_entrada'])}\n\n"
             f"SEGURO\n{formatar_reais(resultado['valor_seguro'])}\n\n"
             f"PIX\n{formatar_reais(resultado['valor_pix'])}\n\n"
-            f"12X\n{formatar_reais(resultado['parcela_12x'])}\n\n"
-            f"21X\n{formatar_reais(resultado['parcela_21x'])}\n\n"
+            f"12X DE\n{formatar_reais(resultado['parcela_12x'])}\n\n"
+            f"21X DE\n{formatar_reais(resultado['parcela_21x'])}\n\n"
             f"PLANO\n{resultado['plano_vivo']}\n"
             f"{formatar_reais(resultado['valor_plano_vivo'])}",
         )
