@@ -27,6 +27,57 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Gerar informações do EXE (fornecedor e versão)
+        shell: python
+        run: |
+          import os
+          import re
+
+          ref = os.environ.get("GITHUB_REF_NAME", "")
+          m = re.match(r"v?(\d+)(?:\.(\d+))?(?:\.(\d+))?", ref)
+          partes = [int(x) if x else 0 for x in m.groups()] if m else [1, 0, 0]
+          partes = (partes + [0, 0, 0])[:3]
+          versao = ".".join(map(str, partes))
+          tupla = ", ".join(map(str, partes + [0]))
+
+          conteudo = f"""# UTF-8
+          VSVersionInfo(
+            ffi=FixedFileInfo(
+              filevers=({tupla}),
+              prodvers=({tupla}),
+              mask=0x3f,
+              flags=0x0,
+              OS=0x40004,
+              fileType=0x1,
+              subtype=0x0,
+              date=(0, 0)
+            ),
+            kids=[
+              StringFileInfo([
+                StringTable(
+                  '041604B0',
+                  [
+                    StringStruct('CompanyName', 'HowtryX'),
+                    StringStruct('FileDescription', 'Gerador de Etiquetas Vivo'),
+                    StringStruct('FileVersion', '{versao}.0'),
+                    StringStruct('InternalName', 'Gerador_Etiquetas_Vivo'),
+                    StringStruct('LegalCopyright', 'Copyright (c) HowtryX'),
+                    StringStruct('OriginalFilename', 'Gerador_Etiquetas_Vivo.exe'),
+                    StringStruct('ProductName', 'Gerador de Etiquetas Vivo'),
+                    StringStruct('ProductVersion', '{versao}.0'),
+                  ]
+                )
+              ]),
+              VarFileInfo([VarStruct('Translation', [1046, 1200])])
+            ]
+          )
+          """
+
+          with open("version_info.txt", "w", encoding="utf-8") as arquivo:
+              arquivo.write(conteudo)
+
+          print("Versão do EXE:", versao)
+
       - name: Gerar EXE
         run: |
           pyinstaller `
@@ -35,6 +86,7 @@ jobs:
             --onefile `
             --windowed `
             --hidden-import encodings.mac_roman `
+            --version-file version_info.txt `
             --name "Gerador_Etiquetas_Vivo" `
             vivo_etiquetas.py
 
